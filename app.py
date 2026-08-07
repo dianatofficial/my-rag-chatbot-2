@@ -37,15 +37,16 @@ if "rebuild_index" not in st.session_state:
 
 # ------------------------------------------------------------- بارگذاری زنجیره
 @st.cache_resource(show_spinner="در حال بارگذاری ایندکس دیتاست‌ها...")
-def get_vectorstore(rebuild: int = 0):
-    """ایندکس را فقط یک‌بار در طول عمر کانتینر می‌سازد یا از دیسک می‌خواند."""
-    return load_vectorstore("data", force_build=bool(rebuild))
+def get_vectorstore():
+    """ایندکس را از دیسک می‌خواند."""
+    return load_vectorstore("data", force_build=False)
 
 
-def get_chain(k: int, rebuild: int = 0):
+def get_chain(k: int):
     """زنجیره‌ی RAG را روی ایندکس کش‌شده می‌سازد."""
-    vectorstore = get_vectorstore(rebuild=rebuild)
+    vectorstore = get_vectorstore()
     return build_rag_chain("data", k=k, rebuild=False, vectorstore=vectorstore)
+
 
 
 # ------------------------------------------------------------------- نمایش غنی
@@ -134,7 +135,8 @@ with st.sidebar:
     show_sources = st.toggle("نمایش منابع پاسخ", value=True)
 
     if st.button("بازسازی ایندکس", use_container_width=True):
-        st.session_state.rebuild_index += 1
+        st.cache_resource.clear()
+        st.success("حافظه کش ایندکس پاک‌سازی شد.")
         st.rerun()
 
     if st.button("پاک‌کردن تاریخچه", use_container_width=True):
@@ -146,10 +148,10 @@ with st.sidebar:
 
 
 try:
-    chain = get_chain(top_k, rebuild=st.session_state.rebuild_index)
+    chain = get_chain(top_k)
 except Exception as exc:  # noqa: BLE001
     st.warning(
-        "موتور در حالت بازگشتی فعال است. پاسخ‌ها ممکن است بر پایه‌ی داده‌های موجود و بدون استفاده از مدل embedding پیشرفته تولید شوند."
+        "موتور در حالت بازگشتی فعال است."
     )
     with st.expander("جزئیات فنی"):
         st.code(f"{exc}\n\n{traceback.format_exc()}", language="text")
@@ -169,7 +171,8 @@ for msg in st.session_state.messages:
 
 
 # -------------------------------------------------------------------- ورودی کاربر
-if prompt := st.chat_input("سوال خود را درباره‌ی دیتاست‌ها بپرسید...", disabled=chain is None):
+if prompt := st.chat_input("سوال خود را درباره‌ی دیتاست‌ها بپرسید..."):
+
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
