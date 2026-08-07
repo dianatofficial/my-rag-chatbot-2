@@ -5,7 +5,7 @@ import traceback
 import pandas as pd
 import streamlit as st
 
-from rag_engine import build_rag_chain, load_vectorstore
+from rag_engine import _load_credentials, build_rag_chain, load_vectorstore
 
 # ---------------------------------------------------------------- تنظیمات صفحه
 st.set_page_config(
@@ -14,13 +14,25 @@ st.set_page_config(
     layout="centered",
 )
 
-# فونت و استایل‌های سفارشی حذف شده‌اند تا متن CSS در صفحه ظاهر نشود.
-
 st.title("RAG Engine — تحلیل داده")
 st.caption("پاسخ‌ها فقط بر پایه‌ی محتوای دیتاست‌های موجود تولید می‌شوند.")
 
+# بررسی وجود کلید API
+api_key_check, _ = _load_credentials()
+if not api_key_check:
+    st.warning(
+        "⚠️ **کلید API در آنلاین ثبت نشده است!**\n\n"
+        "برای اینکه مدل هوش مصنوعی پاسخ‌های کامل و هوشمند تولید کند، لطفا وارد داشبورد Streamlit Cloud به آدرس "
+        "[share.streamlit.io](https://share.streamlit.io) شوید و در بخش **App Settings > Secrets** کلیک کرده و مقادیر زیر را ذخیره کنید:\n\n"
+        "```toml\n"
+        'API_KEY = "sk-uj60Mg8RpPN8sZdJE7AyKGFwDPsfi5EqrK5PlpUQ0qDapZpr"\n'
+        'BASE_URL = "https://api.gapgpt.app/v1"\n'
+        "```"
+    )
+
 if "rebuild_index" not in st.session_state:
     st.session_state.rebuild_index = 0
+
 
 
 # ------------------------------------------------------------- بارگذاری زنجیره
