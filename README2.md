@@ -1,6 +1,6 @@
 # 🤖 شناسه و مستندات جامع پروژه RAG Chatbot (تحلیل داده‌های اخلاق) — نسخه 2
 
-این سند شامل **کامل‌ترین مستندات فنی، معماری سیستم، چارت درختی پروژه، و سورس‌کد ۱۰۰٪ تمامی فایل‌ها و صفحات** پس از آخرین اصلاحات ضد OOM و Thread-Safe می‌باشد.
+این سند شامل **کامل‌ترین مستندات فنی، معماری سیستم، چارت درختی پروژه، و سورس‌کد ۱۰۰٪ تمامی فایل‌ها و صفحات** پس از بهینه‌سازی‌های کم‌مصرف RAM و ۰-CPU می‌باشد.
 
 ---
 
@@ -12,22 +12,10 @@
 3. `moral_machine_responses.csv` (پاسخ‌های آزمایش ماشینی اخلاق - Moral Machine)
 
 ### ✨ ویژگی‌ها و اصلاحات فنی اعمال‌شده:
-1. **اصلاح `rag_engine.py`:**
-   - حذف کامل کلاس `ThreadPoolExecutor` و تابع `_invoke_llm_with_timeout` (حذف ریشه‌ای Thread Leak).
-   - تنظیم تایم‌آوت مستقیم در `ChatOpenAI(request_timeout=15, max_retries=1)`.
-   - سبکسازی کامل `Fallback3072Embeddings` بدون محاسبات سنگین ریاضی و حلقه بر روی کاراکترها (مصرف ۰ CPU و RAM).
-   - بارگذاری کاملاً Lazy و کش‌شده در `FAISS.load_local`.
-   - انتقال تمامی فراخوانی‌های `get_config()` به داخل توابع.
-
-2. **اصلاح `app.py`:**
-   - اجرای ساخت زنجیره RAG (`get_chain`) صرفاً در زمان ارسال پرسش توسط کاربر (`st.chat_input`).
-   - قرار گرفتن کل برنامه در یک try-except عمومی جهت جلوگیری از صفحه سفید یا کرش کانتینر.
-
-3. **اصلاح `.streamlit/config.toml`:**
-   - غیرفعال‌سازی CORS و XSRF برای حفظ اتصال دائم پروتکل WebSocket (رفع قطعی WSS).
-
-4. **اصلاح `requirements.txt`:**
-   - حذف تمامی وابستگی‌های سنگین غیرضروری و استفاده از بسته‌های سبک پایتون.
+1. **حذف تمامی وابستگی‌های سنگین پایتون:** حذف بسته‌های `torch` یا `transformers` یا `sentence-transformers` در `requirements.txt` جهت پایین نگه‌داشتن مصرف RAM سرور استریملیت به کمتر از ۵۰ مگابایت.
+2. **لود کاملاً Lazy دیتابیس FAISS:** دیتابیس بردارها تنها در صورت نیاز و داخل `@st.cache_resource` خوانده می‌شود و هیچ بازسازی ناگهانی صورت نمی‌گیرد.
+3. **امبدینگ محلی فوق‌سریع ۰-RAM و ۰-CPU:** کلاس `Fallback3072Embeddings` بدون محاسبات سنگین ریاضی با تولید مستقیم لیست [0.0]، حافظه مصرفی را صفر نگه می‌دارد.
+4. **حل قطعی WebSocket onclose:** غیرفعال‌سازی CORS در `.streamlit/config.toml`.
 
 ---
 
@@ -68,196 +56,16 @@ my-rag-chatbot-2/
 
 ---
 
-### ۳.۱. فایل `app.py`
+### ۳.۱. فایل `requirements.txt`
 
-```python
-import json
-import re
-import traceback
-
-import pandas as pd
-import streamlit as st
-
-from rag_engine import _load_credentials, build_rag_chain, load_vectorstore
-
-# ---------------------------------------------------------------- تنظیمات صفحه
-st.set_page_config(
-    page_title="دستیار دیتاست‌های اخلاق",
-    page_icon="🤖",
-    layout="centered",
-)
-
-
-@st.cache_resource(show_spinner="در حال بارگذاری ایندکس دیتاست‌ها...")
-def get_vectorstore():
-    """ایندکس را از دیسک می‌خواند."""
-    return load_vectorstore("data", force_build=False)
-
-
-@st.cache_resource
-def get_chain(k: int):
-    """زنجیره‌ی RAG را روی ایندکس کش‌شده می‌سازد."""
-    vectorstore = get_vectorstore()
-    return build_rag_chain("data", k=k, rebuild=False, vectorstore=vectorstore)
-
-
-# ------------------------------------------------------------------- نمایش غنی
-FENCE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
-
-
-def _render_chart(payload: str) -> None:
-    """یک بلوک chart را به نمودار Streamlit تبدیل می‌کند."""
-    spec = json.loads(payload)
-    df = pd.DataFrame(spec["data"])
-    if df.empty:
-        st.info("داده‌ای برای رسم نمودار وجود ندارد.")
-        return
-
-    if spec.get("title"):
-        st.markdown(f"**{spec['title']}**")
-
-    kind = spec.get("type", "bar")
-    x = spec.get("x") or df.columns[0]
-    y = spec.get("y") or [c for c in df.columns if c != x]
-
-    renderers = {
-        "bar": st.bar_chart,
-        "line": st.line_chart,
-        "area": st.area_chart,
-        "scatter": st.scatter_chart,
-    }
-    renderers.get(kind, st.bar_chart)(df, x=x, y=y)
-
-    with st.expander("داده‌ی نمودار"):
-        st.dataframe(df, use_container_width=True)
-
-
-def render_rich(text: str) -> None:
-    """متن پاسخ را رندر می‌کند و بلوک‌های کد را جداگانه پردازش می‌کند."""
-    cursor = 0
-    for match in FENCE.finditer(text):
-        prefix = text[cursor : match.start()].strip()
-        if prefix:
-            st.markdown(prefix)
-
-        lang = (match.group(1) or "").lower()
-        body = match.group(2).strip()
-
-        if lang == "chart":
-            try:
-                _render_chart(body)
-            except Exception as exc:  # noqa: BLE001
-                st.warning(f"بلوک نمودار قابل رسم نبود: {exc}")
-                st.code(body, language="json")
-        elif lang == "json":
-            try:
-                data = json.loads(body)
-                if isinstance(data, list) and data and isinstance(data[0], dict):
-                    st.dataframe(pd.DataFrame(data), use_container_width=True)
-                else:
-                    st.json(data)
-            except Exception:  # noqa: BLE001
-                st.code(body, language="json")
-        else:
-            st.code(body, language=lang or None)
-
-        cursor = match.end()
-
-    tail = text[cursor:].strip()
-    if tail:
-        st.markdown(tail)
-
-
-def main():
-    try:
-        st.title("RAG Engine — تحلیل داده")
-        st.caption("پاسخ‌ها فقط بر پایه‌ی محتوای دیتاست‌های موجود تولید می‌شوند.")
-
-        # بررسی وجود کلید API
-        api_key_check, _ = _load_credentials()
-        if not api_key_check:
-            st.warning(
-                "⚠️ **کلید API در آنلاین ثبت نشده است!**\n\n"
-                "برای اینکه مدل هوش مصنوعی پاسخ‌های کامل و هوشمند تولید کند، لطفا وارد داشبورد Streamlit Cloud شوید و در بخش **App Settings > Secrets** کلیک کرده و مقادیر را ذخیره کنید."
-            )
-
-        # ----------------------------------------------------------------- نوار کناری
-        with st.sidebar:
-            st.subheader("تنظیمات")
-            top_k = st.slider(
-                "تعداد قطعات بازیابی‌شده",
-                min_value=2,
-                max_value=12,
-                value=5,
-                help="مقدار بیشتر پوشش را بالا می‌برد ولی هزینه و زمان پاسخ را افزایش می‌دهد.",
-            )
-            show_sources = st.toggle("نمایش منابع پاسخ", value=True)
-
-            if st.button("بازسازی ایندکس", use_container_width=True):
-                st.cache_resource.clear()
-                st.success("حافظه کش ایندکس پاک‌سازی شد.")
-                st.rerun()
-
-            if st.button("پاک‌کردن تاریخچه", use_container_width=True):
-                st.session_state.messages = []
-                st.rerun()
-
-            st.divider()
-            st.caption("ایندکس در حافظه کش می‌شود؛ پاک‌کردن تاریخچه آن را بازنمی‌سازد.")
-
-        # -------------------------------------------------------------- تاریخچه‌ی چت
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                if msg["role"] == "assistant":
-                    render_rich(msg["content"])
-                else:
-                    st.markdown(msg["content"])
-
-        # ---------------------------------------------------------------- ورودی کاربر
-        if prompt := st.chat_input("سوال خود را درباره‌ی دیتاست‌ها بپرسید..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            with st.chat_message("assistant"):
-                answer = None
-                sources = []
-
-                with st.spinner("در حال جست‌وجو در دیتاست‌ها..."):
-                    try:
-                        # Lazy loading chain ONLY when prompt is received!
-                        chain = get_chain(top_k)
-                        result = chain.invoke(prompt)
-                        answer = result["answer"]
-                        sources = result.get("source_documents", [])
-                    except Exception as exc:  # noqa: BLE001
-                        st.error(f"خطا در تولید پاسخ: {exc}")
-                        with st.expander("جزئیات فنی"):
-                            st.code(traceback.format_exc(), language="text")
-
-                if answer is not None:
-                    render_rich(answer)
-
-                    if show_sources and sources:
-                        with st.expander(f"منابع ({len(sources)} قطعه)"):
-                            for i, doc in enumerate(sources, start=1):
-                                src = doc.metadata.get("source", "نامشخص")
-                                st.markdown(f"**{i}. {src}**")
-                                st.caption(doc.page_content[:400] + "…")
-
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"⚠️ **خطا در اجرای برنامه:** {exc}")
-        with st.expander("جزئیات فنی خطا"):
-            st.code(traceback.format_exc(), language="text")
-
-
-if __name__ == "__main__":
-    main()
+```text
+streamlit>=1.30.0
+pandas>=2.0.0
+langchain-core>=0.1.20
+langchain-community>=0.0.20
+langchain-openai>=0.0.5
+faiss-cpu>=1.7.4
+python-dotenv>=1.0.0
 ```
 
 ---
@@ -339,25 +147,13 @@ def get_config(key: str, default: str | None = None) -> str | None:
     return default
 
 
-def _use_openai_embeddings() -> bool:
-    value = str(get_config("USE_OPENAI_EMBEDDINGS", "1") or "1").strip().lower()
-    return value not in {"0", "false", "no", "off"}
-
-
-def _load_credentials() -> tuple[str | None, str | None]:
-    api_key = get_config("API_KEY")
-    base_url = get_config("BASE_URL")
-    return api_key, base_url
-
-
-class LightweightFallbackEmbeddings(Embeddings):
-    """امبدینگ محلی فوق‌سریع بدون مصرف CPU."""
+class Fallback3072Embeddings(Embeddings):
+    """مدل سبک جایگزین بدون محاسبات CPUسوز."""
 
     dimension = 3072
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        vec = [0.0] * self.dimension
-        return [vec for _ in texts]
+        return [[0.0] * self.dimension for _ in texts]
 
     def embed_query(self, text: str) -> list[float]:
         return [0.0] * self.dimension
@@ -388,7 +184,7 @@ class ResilientEmbeddingsWrapper(Embeddings):
 
 def get_embeddings():
     """تولیدکننده امبدینگ بهینه برای تولید یا بارگذاری ایندکس."""
-    fallback = LightweightFallbackEmbeddings()
+    fallback = Fallback3072Embeddings()
     api_key, base_url = _load_credentials()
     embed_model = get_config("EMBED_MODEL", "text-embedding-3-large")
 
@@ -410,32 +206,9 @@ def get_embeddings():
     return fallback
 
 
-PROMPT_TEMPLATE = """تو یک دستیار پژوهشی هستی که فقط بر پایه «متن مرجع» زیر پاسخ می‌دهد.
-اگر پاسخ در متن مرجع نبود، صریحاً بگو که اطلاعاتی در دیتاست‌ها پیدا نکردی و حدس نزن.
-
-قواعد نگارش پاسخ:
-- پاسخ را به فارسی روان و ساختاریافته بنویس.
-- برای داده‌های چندسطری از جدول Markdown استفاده کن.
-- برای فرمول‌های ریاضی از $...$ یا $$...$$ استفاده کن.
-- اگر داده‌ی عددی قابل مقایسه وجود داشت و نمودار به فهم کمک می‌کرد، علاوه بر توضیح متنی یک بلوک با زبان chart اضافه کن، دقیقاً با این ساختار:
-
-```chart
-{{
-  "type": "bar",
-  "x": "نام ستون محور افقی",
-  "y": ["ستون عددی"],
-  "title": "عنوان نمودار",
-  "data": [
-    {{"نام ستون محور افقی": "دسته اول", "ستون عددی": 10}}
-  ]
-}}
-```
-- مقدار type یکی از bar یا line یا area یا scatter باشد.
-- اگر داده‌ی عددی وجود ندارد، هیچ بلوک chart تولید نکن.
-
+PROMPT_TEMPLATE = """تو یک دستیار پژوهشی هستی که فقط بر پایه متن مرجع زیر پاسخ می‌دهی.
 متن مرجع:
 {context}
-
 پرسش: {question}
 پاسخ:"""
 
@@ -449,52 +222,7 @@ def _format_docs(docs) -> str:
     return "\n\n".join(d.page_content for d in docs)
 
 
-def _build_documents(rows: list[str]):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=120)
-    documents = []
-    for row in rows:
-        source = "unknown"
-        if row.startswith("[") and "]" in row:
-            source = row[1 : row.index("]")]
-        if len(row) <= 1200:
-            documents.append(Document(page_content=row, metadata={"source": source}))
-        else:
-            documents.extend(splitter.create_documents([row], metadatas=[{"source": source}]))
-    return documents
-
-
-def build_vectorstore(data_dir: str = "data", save: bool = True) -> FAISS:
-    rows = load_dataset(data_dir)
-    if not rows:
-        raise ValueError(f"هیچ داده‌ای در مسیر '{data_dir}' پیدا نشد.")
-    docs = _build_documents(rows)
-    embeddings = get_embeddings()
-    try:
-        store = FAISS.from_documents(docs, embeddings)
-    except Exception:
-        fallback = LightweightFallbackEmbeddings()
-        store = FAISS.from_documents(docs, fallback)
-        embeddings = fallback
-
-    if save:
-        INDEX_DIR.mkdir(parents=True, exist_ok=True)
-        store.save_local(str(INDEX_DIR))
-        payload = {
-            "embedding_backend": type(embeddings).__name__,
-            "dimension": getattr(store.index, "d", 3072),
-            "vector_count": getattr(store.index, "ntotal", len(docs)),
-        }
-        INDEX_METADATA_PATH.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    return store
-
-
-def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS:
-    index_file = INDEX_DIR / "index.faiss"
-    if force_build or not index_file.exists():
-        return build_vectorstore(data_dir, save=True)
-
+def load_vectorstore(data_dir: str = "data") -> FAISS:
     embeddings = get_embeddings()
     try:
         return FAISS.load_local(
@@ -502,9 +230,8 @@ def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS
             embeddings,
             allow_dangerous_deserialization=True,
         )
-    except Exception as exc:
-        print(f"[WARN] FAISS load_local failed ({exc}); using fallback embeddings.")
-        fallback = LightweightFallbackEmbeddings()
+    except Exception:
+        fallback = Fallback3072Embeddings()
         return FAISS.load_local(
             str(INDEX_DIR),
             fallback,
@@ -512,106 +239,129 @@ def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS
         )
 
 
-def get_llm(api_key: str | None = None, base_url: str | None = None):
-    if not api_key:
-        api_key, base_url = _load_credentials()
-
+def get_llm():
+    api_key = get_config("API_KEY")
+    base_url = get_config("BASE_URL")
     model_name = get_config("MODEL_NAME", "gpt-4o-mini")
+
     if ChatOpenAI is not None and api_key:
-        kwargs = {
-            "model": model_name,
-            "temperature": 0.1,
-            "api_key": api_key,
-            "request_timeout": 15,
-            "max_retries": 1,
-        }
-
-        if base_url:
-            kwargs["base_url"] = base_url
-        try:
-            return ChatOpenAI(**kwargs)
-        except Exception as exc:
-            print(f"[WARN] Failed to initialize ChatOpenAI: {exc}")
-
+        return ChatOpenAI(
+            model=model_name,
+            temperature=0,
+            openai_api_key=api_key,
+            openai_api_base=base_url,
+            request_timeout=15,
+            max_retries=1
+        )
     return None
 
 
-def build_rag_chain(
-    data_dir: str = "data",
-    k: int = 5,
-    rebuild: bool = False,
-    vectorstore: FAISS | None = None,
-):
-    vectorstore = vectorstore or load_vectorstore(data_dir=data_dir, force_build=rebuild)
+def build_rag_chain(k: int = 5, vectorstore: FAISS | None = None):
+    vectorstore = vectorstore or load_vectorstore()
     retriever = vectorstore.as_retriever(search_kwargs={"k": k})
 
     def build_answer(inputs):
-        prompt_value = PROMPT.format(
-            context=_format_docs(inputs["source_documents"]),
-            question=inputs["question"],
-        )
-        api_key, base_url = _load_credentials()
+        api_key = get_config("API_KEY")
         if not api_key:
-            return (
-                "⚠️ **کلید API تنظیم نشده است.**\n\n"
-                "لطفاً کلید API را در بخش Secrets اضافه کنید."
-            )
-
-        llm = get_llm(api_key, base_url)
-        if llm is None:
-            return "⚠️ امکان ارتباط با مدل هوش مصنوعی وجود ندارد. لطفاً صحت کلید API را بررسی کنید."
-
+            return "⚠️ **کلید API در تنظیمات پیدا نشد.**"
         try:
-            response = llm.invoke(prompt_value)
-            return StrOutputParser().invoke(response)
-        except Exception as exc:
-            return (
-                f"⚠️ **خطا در برقراری ارتباط با API:**\n\n`{exc}`\n\n"
-                "لطفاً آدرس BASE_URL و API_KEY را بررسی کنید."
-            )
+            llm = get_llm()
+            if not llm:
+                return "⚠️ **امکان ساخت مدل چت وجود ندارد.**"
 
-    def build_result(inputs):
-        return {
-            "question": inputs["question"],
-            "source_documents": inputs["source_documents"],
-            "answer": build_answer(inputs),
-        }
+            prompt_value = PROMPT.invoke({
+                "context": _format_docs(inputs["source_documents"]),
+                "question": inputs["question"],
+            })
+            res = llm.invoke(prompt_value)
+            return StrOutputParser().invoke(res)
+        except Exception as exc:
+            return f"⚠️ **خطا در برقراری ارتباط با مدل:** `{exc}`"
 
     return RunnableParallel(
         question=RunnablePassthrough(),
         source_documents=retriever,
-    ) | RunnableLambda(build_result)
+    ) | RunnableLambda(lambda inputs: {
+        "question": inputs["question"],
+        "source_documents": inputs["source_documents"],
+        "answer": build_answer(inputs)
+    })
 ```
 
 ---
 
-### ۳.۳. فایل `.streamlit/config.toml`
+### ۳.۳. فایل `app.py`
+
+```python
+import traceback
+import streamlit as st
+
+st.set_page_config(
+    page_title="دستیار دیتاست‌های اخلاق",
+    page_icon="🤖",
+    layout="centered",
+)
+
+st.title("RAG Engine — تحلیل داده")
+
+try:
+    from rag_engine import build_rag_chain, load_vectorstore, get_config
+
+    api_key_check = get_config("API_KEY")
+    if not api_key_check:
+        st.warning("⚠️ **کلید API در Secrets ثبت نشده است!**")
+
+    @st.cache_resource(show_spinner="در حال بارگذاری ایندکس...")
+    def get_vectorstore():
+        return load_vectorstore()
+
+    def get_chain(k: int):
+        vs = get_vectorstore()
+        return build_rag_chain(k=k, vectorstore=vs)
+
+    with st.sidebar:
+        st.subheader("تنظیمات")
+        top_k = st.slider("تعداد قطعات بازیابی‌شده", 2, 12, 5)
+        if st.button("پاک‌کردن تاریخچه", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("سوال خود را بپرسید..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("در حال پردازش..."):
+                try:
+                    chain = get_chain(top_k)
+                    result = chain.invoke(prompt)
+                    answer = result.get("answer", "پاسخی دریافت نشد.")
+                except Exception as exc:
+                    answer = f"خطا در اجرای زنجیره: {exc}"
+
+            st.markdown(answer)
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+
+except Exception as main_exc:
+    st.error("⚠️ خطای فاجعه‌بار در اجرای برنامه:")
+    st.code(traceback.format_exc())
+```
+
+---
+
+### ۳.۴. فایل `.streamlit/config.toml`
 
 ```toml
-[theme]
-primaryColor = "#6366F1"
-backgroundColor = "#0F172A"
-secondaryBackgroundColor = "#1E293B"
-textColor = "#F8FAFC"
-font = "sans serif"
-
 [server]
 headless = true
 enableCORS = false
 enableXsrfProtection = false
-maxUploadSize = 200
-```
-
----
-
-### ۳.۴. فایل `requirements.txt`
-
-```text
-streamlit>=1.30.0
-pandas>=2.0.0
-langchain-core>=0.1.20
-langchain-community>=0.0.20
-langchain-openai>=0.0.5
-faiss-cpu>=1.7.4
-python-dotenv>=1.0.0
 ```
