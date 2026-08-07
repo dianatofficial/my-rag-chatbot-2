@@ -42,10 +42,12 @@ def get_vectorstore():
     return load_vectorstore("data", force_build=False)
 
 
+@st.cache_resource
 def get_chain(k: int):
     """زنجیره‌ی RAG را روی ایندکس کش‌شده می‌سازد."""
     vectorstore = get_vectorstore()
     return build_rag_chain("data", k=k, rebuild=False, vectorstore=vectorstore)
+
 
 
 
