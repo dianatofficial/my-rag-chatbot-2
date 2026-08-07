@@ -379,6 +379,23 @@ def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS
 
 
 
+import concurrent.futures
+
+
+def _invoke_llm_with_timeout(llm, prompt_value, timeout_seconds=12):
+    """مدل را با تایم‌اوت سختگیرانه 12 ثانیه‌ای برای جلوگیری از معلق ماندن استریملیت اجرا می‌کند."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(llm.invoke, prompt_value)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            base_url = get_config("BASE_URL") or "https://api.openai.com/v1"
+            raise TimeoutError(
+                f"پاسخ‌دهی از سرور API (آدرس {base_url}) بیش از {timeout_seconds} ثانیه طول کشید و زمان آن به پایان رسید. "
+                "احتمال دارد سرور API دسترسی از آی‌پی‌های خارجی Streamlit Cloud را محدود یا کند کرده باشد."
+            )
+
+
 def get_llm(api_key: str | None = None, base_url: str | None = None):
     """LLM را در صورت امکان از OpenAI می‌سازد و در غیر این صورت fallback سبک برمی‌گرداند."""
     if not api_key:
@@ -392,8 +409,8 @@ def get_llm(api_key: str | None = None, base_url: str | None = None):
             "temperature": 0,
             "api_key": api_key,
             "openai_api_key": api_key,
-            "timeout": 45,
-            "max_retries": 2,
+            "timeout": 12,
+            "max_retries": 1,
         }
         if base_url:
             kwargs["base_url"] = base_url
@@ -442,7 +459,7 @@ def build_rag_chain(
 
         try:
             llm = get_llm(api_key, base_url)
-            raw = llm.invoke(prompt_value)
+            raw = _invoke_llm_with_timeout(llm, prompt_value, timeout_seconds=12)
             return StrOutputParser().invoke(raw)
         except Exception as exc:
             return (
@@ -465,4 +482,5 @@ def build_rag_chain(
     ) | RunnableLambda(build_result)
 
     return chain
+
 
