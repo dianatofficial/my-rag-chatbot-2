@@ -356,44 +356,27 @@ def build_vectorstore(data_dir: str = "data", save: bool = True) -> FAISS:
 
 
 def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS:
-    """ایندکس پیش‌ساخته را از دیسک می‌خواند و در صورت نبود، آن را می‌سازد."""
-    if force_build or not INDEX_DIR.exists():
+    """ایندکس پیش‌ساخته را از دیسک می‌خواند. فوق‌العاده سریع و بدون مصرف CPU."""
+    index_file = INDEX_DIR / "index.faiss"
+    if force_build or not index_file.exists():
         return build_vectorstore(data_dir, save=True)
 
-    index_dim = None
+    embeddings = get_embeddings()
     try:
-        import faiss
-
-        index_path = INDEX_DIR / "index.faiss"
-        if index_path.exists():
-            index_dim = faiss.read_index(str(index_path)).d
-    except Exception:
-        index_dim = None
-
-    try:
-        preferred_embeddings = _preferred_embeddings()
-    except Exception:
-        preferred_embeddings = None
-
-    if preferred_embeddings is not None and _should_rebuild_index(index_dim, preferred_embeddings):
-        return build_vectorstore(data_dir, save=True)
-
-    embeddings = _select_embeddings_for_index(index_dim)
-    try:
-        store = FAISS.load_local(
+        return FAISS.load_local(
             str(INDEX_DIR),
             embeddings,
             allow_dangerous_deserialization=True,
         )
+    except Exception as exc:
+        print(f"[WARN] Direct load with primary embeddings failed ({exc}); using fallback embeddings.")
+        fallback = Fallback3072Embeddings()
+        return FAISS.load_local(
+            str(INDEX_DIR),
+            fallback,
+            allow_dangerous_deserialization=True,
+        )
 
-        # اگر بعد embedding با بعد ایندکس نخواند، به‌جای کرش‌کردن ایندکس بازسازی می‌شود.
-        dim = _embedding_dimension(embeddings)
-        if dim is not None and getattr(store.index, "d", None) not in (None, dim):
-            return build_vectorstore(data_dir, save=True)
-
-        return store
-    except Exception:
-        return build_vectorstore(data_dir, save=True)
 
 
 def get_llm(api_key: str | None = None, base_url: str | None = None):
