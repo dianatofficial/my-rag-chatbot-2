@@ -1,187 +1,70 @@
-import json
-import re
 import traceback
-
-import pandas as pd
 import streamlit as st
 
-from rag_engine import _load_credentials, build_rag_chain, load_vectorstore
-
-# ---------------------------------------------------------------- تنظیمات صفحه
 st.set_page_config(
     page_title="دستیار دیتاست‌های اخلاق",
     page_icon="🤖",
     layout="centered",
 )
 
+st.title("RAG Engine — تحلیل داده")
+st.caption("پاسخ‌ها فقط بر پایه‌ی محتوای دیتاست‌های موجود تولید می‌شوند.")
 
-@st.cache_resource(show_spinner="در حال بارگذاری ایندکس دیتاست‌ها...")
-def get_vectorstore():
-    """ایندکس را از دیسک می‌خواند."""
-    return load_vectorstore("data", force_build=False)
+try:
+    from rag_engine import build_rag_chain, load_vectorstore, get_config
 
+    api_key_check = get_config("API_KEY")
+    if not api_key_check:
+        st.warning("⚠️ **کلید API_KEY در تنظیمات (Secrets) ثبت نشده است!**")
 
-@st.cache_resource
-def get_chain(k: int):
-    """زنجیره‌ی RAG را روی ایندکس کش‌شده می‌سازد."""
-    vectorstore = get_vectorstore()
-    return build_rag_chain("data", k=k, rebuild=False, vectorstore=vectorstore)
+    @st.cache_resource(show_spinner="در حال بارگذاری ایندکس دیتاست‌ها...")
+    def get_vectorstore():
+        return load_vectorstore()
 
+    def get_chain(k: int):
+        vs = get_vectorstore()
+        return build_rag_chain(k=k, vectorstore=vs)
 
-# ------------------------------------------------------------------- نمایش غنی
-FENCE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
-
-
-def _render_chart(payload: str) -> None:
-    """یک بلوک chart را به نمودار Streamlit تبدیل می‌کند."""
-    spec = json.loads(payload)
-    df = pd.DataFrame(spec["data"])
-    if df.empty:
-        st.info("داده‌ای برای رسم نمودار وجود ندارد.")
-        return
-
-    if spec.get("title"):
-        st.markdown(f"**{spec['title']}**")
-
-    kind = spec.get("type", "bar")
-    x = spec.get("x") or df.columns[0]
-    y = spec.get("y") or [c for c in df.columns if c != x]
-
-    renderers = {
-        "bar": st.bar_chart,
-        "line": st.line_chart,
-        "area": st.area_chart,
-        "scatter": st.scatter_chart,
-    }
-    renderers.get(kind, st.bar_chart)(df, x=x, y=y)
-
-    with st.expander("داده‌ی نمودار"):
-        st.dataframe(df, use_container_width=True)
-
-
-def render_rich(text: str) -> None:
-    """متن پاسخ را رندر می‌کند و بلوک‌های کد را جداگانه پردازش می‌کند."""
-    cursor = 0
-    for match in FENCE.finditer(text):
-        prefix = text[cursor : match.start()].strip()
-        if prefix:
-            st.markdown(prefix)
-
-        lang = (match.group(1) or "").lower()
-        body = match.group(2).strip()
-
-        if lang == "chart":
-            try:
-                _render_chart(body)
-            except Exception as exc:  # noqa: BLE001
-                st.warning(f"بلوک نمودار قابل رسم نبود: {exc}")
-                st.code(body, language="json")
-        elif lang == "json":
-            try:
-                data = json.loads(body)
-                if isinstance(data, list) and data and isinstance(data[0], dict):
-                    st.dataframe(pd.DataFrame(data), use_container_width=True)
-                else:
-                    st.json(data)
-            except Exception:  # noqa: BLE001
-                st.code(body, language="json")
-        else:
-            st.code(body, language=lang or None)
-
-        cursor = match.end()
-
-    tail = text[cursor:].strip()
-    if tail:
-        st.markdown(tail)
-
-
-def main():
-    try:
-        st.title("RAG Engine — تحلیل داده")
-        st.caption("پاسخ‌ها فقط بر پایه‌ی محتوای دیتاست‌های موجود تولید می‌شوند.")
-
-        # بررسی وجود کلید API
-        api_key_check, _ = _load_credentials()
-        if not api_key_check:
-            st.warning(
-                "⚠️ **کلید API در آنلاین ثبت نشده است!**\n\n"
-                "برای اینکه مدل هوش مصنوعی پاسخ‌های کامل و هوشمند تولید کند، لطفا وارد داشبورد Streamlit Cloud شوید و در بخش **App Settings > Secrets** کلیک کرده و مقادیر را ذخیره کنید."
-            )
-
-        # ----------------------------------------------------------------- نوار کناری
-        with st.sidebar:
-            st.subheader("تنظیمات")
-            top_k = st.slider(
-                "تعداد قطعات بازیابی‌شده",
-                min_value=2,
-                max_value=12,
-                value=5,
-                help="مقدار بیشتر پوشش را بالا می‌برد ولی هزینه و زمان پاسخ را افزایش می‌دهد.",
-            )
-            show_sources = st.toggle("نمایش منابع پاسخ", value=True)
-
-            if st.button("بازسازی ایندکس", use_container_width=True):
-                st.cache_resource.clear()
-                st.success("حافظه کش ایندکس پاک‌سازی شد.")
-                st.rerun()
-
-            if st.button("پاک‌کردن تاریخچه", use_container_width=True):
-                st.session_state.messages = []
-                st.rerun()
-
-            st.divider()
-            st.caption("ایندکس در حافظه کش می‌شود؛ پاک‌کردن تاریخچه آن را بازنمی‌سازد.")
-
-        # -------------------------------------------------------------- تاریخچه‌ی چت
-        if "messages" not in st.session_state:
+    with st.sidebar:
+        st.subheader("تنظیمات")
+        top_k = st.slider("تعداد قطعات بازیابی‌شده", 2, 12, 5)
+        if st.button("پاک‌کردن تاریخچه", use_container_width=True):
             st.session_state.messages = []
+            st.rerun()
 
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                if msg["role"] == "assistant":
-                    render_rich(msg["content"])
-                else:
-                    st.markdown(msg["content"])
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-        # ---------------------------------------------------------------- ورودی کاربر
-        if prompt := st.chat_input("سوال خود را درباره‌ی دیتاست‌ها بپرسید..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-            with st.chat_message("assistant"):
-                answer = None
-                sources = []
+    if prompt := st.chat_input("سوال خود را درباره‌ی دیتاست‌ها بپرسید..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-                with st.spinner("در حال جست‌وجو در دیتاست‌ها..."):
-                    try:
-                        # Lazy loading chain ONLY when prompt is received!
-                        chain = get_chain(top_k)
-                        result = chain.invoke(prompt)
-                        answer = result["answer"]
-                        sources = result.get("source_documents", [])
-                    except Exception as exc:  # noqa: BLE001
-                        st.error(f"خطا در تولید پاسخ: {exc}")
-                        with st.expander("جزئیات فنی"):
-                            st.code(traceback.format_exc(), language="text")
+        with st.chat_message("assistant"):
+            answer = None
+            with st.spinner("در حال ارتباط با سرور API و جست‌وجو در دیتاست‌ها..."):
+                try:
+                    chain = get_chain(top_k)
+                    result = chain.invoke(prompt)
+                    answer = result.get("answer")
+                except Exception as exc:
+                    err_msg = str(exc)
+                    st.error(
+                        "⚠️ **خطا در برقراری ارتباط با سرور API:**\n\n"
+                        f"`{err_msg}`\n\n"
+                        "💡 **راهکار:** سرور API (آدرس `BASE_URL`) در مهلت ۲۵ ثانیه پاسخ نداد یا اتصال آن مسدود شد. لطفاً کلید `API_KEY` و آدرس `BASE_URL` را در Secrets بررسی کنید."
+                    )
+                    with st.expander("جزئیات فنی خطا"):
+                        st.code(traceback.format_exc(), language="text")
 
-                if answer is not None:
-                    render_rich(answer)
+            if answer:
+                st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
 
-                    if show_sources and sources:
-                        with st.expander(f"منابع ({len(sources)} قطعه)"):
-                            for i, doc in enumerate(sources, start=1):
-                                src = doc.metadata.get("source", "نامشخص")
-                                st.markdown(f"**{i}. {src}**")
-                                st.caption(doc.page_content[:400] + "…")
-
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"⚠️ **خطا در اجرای برنامه:** {exc}")
-        with st.expander("جزئیات فنی خطا"):
-            st.code(traceback.format_exc(), language="text")
-
-
-if __name__ == "__main__":
-    main()
+except Exception as main_exc:
+    st.error("⚠️ **خطای فاجعه‌بار در اجرای برنامه:**")
+    st.code(traceback.format_exc(), language="text")
