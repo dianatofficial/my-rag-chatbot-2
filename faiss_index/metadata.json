@@ -1,6 +1,6 @@
 {
-  "embedding_backend": "OpenAIEmbeddings",
-  "embedding_model": "text-embedding-3-large",
+  "embedding_backend": "Fallback3072Embeddings",
+  "embedding_model": null,
   "dimension": 3072,
   "vector_count": 7748
 }

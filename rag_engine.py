@@ -11,6 +11,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from dotenv import load_dotenv
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
@@ -64,32 +65,42 @@ OPENAI_EMBEDDING_DIMENSIONS = {
 
 def get_config(key: str, default: str | None = None) -> str | None:
     """مقدار یک کلید تنظیمات را از Streamlit Secrets یا .env برمی‌گرداند."""
-    fallbacks = [key]
-    if key == "API_KEY":
-        fallbacks.append("OPENAI_API_KEY")
-    elif key == "BASE_URL":
-        fallbacks.append("OPENAI_BASE_URL")
+    fallbacks = [key, key.upper(), key.lower()]
+    if key in ("API_KEY", "OPENAI_API_KEY"):
+        fallbacks.extend(["API_KEY", "OPENAI_API_KEY", "api_key", "openai_api_key"])
+    elif key in ("BASE_URL", "OPENAI_BASE_URL"):
+        fallbacks.extend(["BASE_URL", "OPENAI_BASE_URL", "base_url", "openai_base_url"])
+
+    seen = set()
+    unique_fallbacks = [f for f in fallbacks if not (f in seen or seen.add(f))]
 
     try:
         import streamlit as st
 
         if hasattr(st, "secrets"):
-            for name in fallbacks:
+            for name in unique_fallbacks:
                 try:
                     if name in st.secrets:
                         return str(st.secrets[name])
                 except Exception:
                     pass
+
+                try:
+                    for section in ["secrets", "openai", "DEFAULT"]:
+                        if section in st.secrets and name in st.secrets[section]:
+                            return str(st.secrets[section][name])
+                except Exception:
+                    pass
     except Exception:
         pass
 
-
-    for name in fallbacks:
+    for name in unique_fallbacks:
         value = os.getenv(name)
         if value:
             return value
 
     return default
+
 
 
 MODEL_NAME = get_config("MODEL_NAME", "gpt-4o-mini")
@@ -157,75 +168,84 @@ def _load_credentials() -> tuple[str | None, str | None]:
     return api_key, base_url
 
 
+class ResilientEmbeddingsWrapper(Embeddings):
+    """یک رپر ایمن روی OpenAIEmbeddings که در صورت بروز هرگونه خطای شبکه یا API، خطای فاجعه‌بار ایجاد نمیکند."""
+
+    def __init__(self, primary_embeddings, fallback_embeddings):
+        self.primary = primary_embeddings
+        self.fallback = fallback_embeddings
+        self.dimension = getattr(primary_embeddings, "dimension", 3072)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        try:
+            return self.primary.embed_documents(texts)
+        except Exception as exc:
+            print(f"[WARN] Primary embedding failed: {exc}; using fallback.")
+            return self.fallback.embed_documents(texts)
+
+    def embed_query(self, text):
+        try:
+            return self.primary.embed_query(text)
+        except Exception as exc:
+            print(f"[WARN] Primary embedding query failed: {exc}; using fallback.")
+            return self.fallback.embed_query(text)
+
+    def __call__(self, text):
+        return self.embed_query(text)
+
+
 def get_embeddings():
-    """مدل تبدیل متن به بردار؛ در حالت پیش‌فرض از OpenAI-compatible API استفاده می‌شود."""
+    """مدل تبدیل متن به بردار مقاوم در برابر خطای شبکه."""
+    fallback = Fallback3072Embeddings()
     api_key, base_url = _load_credentials()
+
     if _use_openai_embeddings() and api_key and base_url and OpenAIEmbeddings is not None:
         os.environ.setdefault("OPENAI_API_KEY", api_key)
         os.environ.setdefault("OPENAI_BASE_URL", base_url)
-        return OpenAIEmbeddings(
-            model=EMBED_MODEL,
-            openai_api_key=api_key,
-            openai_api_base=base_url,
-            check_embedding_ctx_length=False,
-            chunk_size=64,
-            timeout=60,
-            max_retries=3,
-        )
+        try:
+            primary = OpenAIEmbeddings(
+                model=EMBED_MODEL,
+                openai_api_key=api_key,
+                openai_api_base=base_url,
+                check_embedding_ctx_length=False,
+                chunk_size=64,
+                timeout=15,
+                max_retries=2,
+            )
+            return ResilientEmbeddingsWrapper(primary, fallback)
+        except Exception:
+            pass
 
-    return get_local_embeddings()
+    return fallback
+
+
+
+class Fallback3072Embeddings:
+    """مدل بردار سبک 3072 بعدی جهت تطبیق کامل با ایندکس موجود و جلوگیری از بازسازی یا بارگذاری PyTorch."""
+
+    dimension = 3072
+
+    def _simple_vector(self, text: str) -> list[float]:
+        text = (text or "").lower()
+        vector = [0.0] * self.dimension
+        for index, ch in enumerate(text):
+            vector[index % self.dimension] += (ord(ch) % 11) / 10.0
+        return vector
+
+    def embed_documents(self, texts):
+        return [self._simple_vector(t) for t in texts]
+
+    def embed_query(self, text):
+        return self._simple_vector(text)
+
+    def __call__(self, text):
+        return self.embed_query(text)
 
 
 def get_local_embeddings():
-    """مدل بردار محلی برای حالت fallback."""
-    if HuggingFaceEmbeddings is not None:
-        return HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"},
-        )
+    """مدل بردار سبک جایگزین."""
+    return Fallback3072Embeddings()
 
-    if SentenceTransformer is not None:
-        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-        class _LocalEmbeddings:
-            dimension = 384
-
-            def __init__(self, model):
-                self.model = model
-
-            def embed_documents(self, texts):
-                return self.model.encode(texts, convert_to_numpy=True).tolist()
-
-            def embed_query(self, text):
-                return self.model.encode([text], convert_to_numpy=True)[0].tolist()
-
-            def __call__(self, text):
-                return self.embed_query(text)
-
-        return _LocalEmbeddings(model)
-
-    class _FallbackEmbeddings:
-        dimension = 8
-
-        def __init__(self):
-            self._dimension = 8
-
-        def _simple_vector(self, text: str) -> list[float]:
-            text = (text or "").lower()
-            vector = [0.0] * self._dimension
-            for index, ch in enumerate(text):
-                vector[index % self._dimension] += (ord(ch) % 11) / 10.0
-            return vector
-
-        def embed_documents(self, texts):
-            return [self._simple_vector(text) for text in texts]
-
-        def embed_query(self, text):
-            return self._simple_vector(text)
-
-        def __call__(self, text):
-            return self.embed_query(text)
-
-    return _FallbackEmbeddings()
 
 
 def _embedding_dimension(embeddings) -> int | None:

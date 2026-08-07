@@ -7,5 +7,3 @@ langchain-openai>=0.0.5
 langchain-text-splitters>=0.0.1
 faiss-cpu>=1.7.4
 python-dotenv>=1.0.0
-sentence-transformers>=2.2.0
-huggingface-hub
