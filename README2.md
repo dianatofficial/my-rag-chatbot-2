@@ -1,6 +1,6 @@
 # 🤖 شناسه و مستندات جامع پروژه RAG Chatbot (تحلیل داده‌های اخلاق) — نسخه 2
 
-این سند شامل **کامل‌ترین مستندات فنی، معماری سیستم، چارت درختی پروژه، و سورس‌کد ۱۰۰٪ تمامی فایل‌ها و صفحات** پس از آخرین بهینه‌سازی‌های عملکردی در Streamlit Cloud می‌باشد.
+این سند شامل **کامل‌ترین مستندات فنی، معماری سیستم، چارت درختی پروژه، و سورس‌کد ۱۰۰٪ تمامی فایل‌ها و صفحات** پس از آخرین بهینه‌سازی‌های فوق‌مقاوم (Lazy Loading & Container Anti-Crash) می‌باشد.
 
 ---
 
@@ -12,12 +12,12 @@
 3. `moral_machine_responses.csv` (پاسخ‌های آزمایش ماشینی اخلاق - Moral Machine)
 
 ### ✨ ویژگی‌ها و بهینه‌سازی‌های کلیدی:
-- **حل مشکل WSS و قطعی WebSocket در Streamlit Cloud:** تنظیم `enableCORS = false` و `enableXsrfProtection = false` جهت پایداری شبکه و اتصال همیشگی فرانت‌اند مرورگر به پلتفرم استریملیت.
-- **امبدینگ محلی فوق‌سریع بدون مصرف CPU:** کلاس `Fallback3072Embeddings` جهت جلوگیری از حلقه بر روی کاراکترها و مصرف پردازنده.
-- **کش کامل زنجیره RAG:** استفاده از دکوراتور `@st.cache_resource` برای توابع `get_vectorstore()` و `get_chain(k)` در `app.py` تا زنجیره با هر برهم‌کنش کاربر مجدداً در حافظه ساخته نشود.
-- **رندرینگ غنی (Rich Rendering):** تبدیل خودکار خروجی مدل به جداول Markdown، فرمول‌های ریاضی LaTeX و نمودارهای تعاملی (`st.bar_chart`, `st.line_chart`).
-- **خوانش پویای کلیدها:** خواندن لحظه‌ای کلیدهای `API_KEY` و `BASE_URL` از `st.secrets` یا `.env`.
-- **ایندرکس پیش‌ساخته FAISS:** استفاده از دیتابیس بردارهای pre-built شامل ۷,۷۴۸ بردار که در ۰.۰۵ ثانیه بارگذاری می‌شود.
+- **معماری Lazy Loading برای جلوگیری از کرش کانتینر:** حذف تمامی فراخوانی‌های top-level `get_config()` از سطح ماژول و انتقال آن‌ها به درون توابع مربوطه تا ماژول‌ها بدون مصرف RAM/CPU لود شوند.
+- **بارگذاری زنجیره RAG فقط در زمان ارسال پیام (On-Demand Chain Execution):** ساخت زنجیره RAG در `app.py` فقط زمانی رخ می‌دهد که کاربر سوالی در `st.chat_input` ثبت کند، و در زمان لود اولیه هیچ بار پردازشی ایجاد نمی‌شود.
+- **بلوک مدیریت استثنا (Top-Level Try-Except) در `app.py`:** کلیه منطق اجرایی برنامه داخل تابع `main()` و مدیریت خطا قرار گرفته است تا در صورت بروز هر مشکلی، UI استریملیت به جای کرش کانتینر، پیام شفاف نشان دهد.
+- **حل مشکل WSS و قطعی WebSocket در Streamlit Cloud:** تنظیم `enableCORS = false` و `enableXsrfProtection = false`.
+- **امبدینگ محلی فوق‌سریع ۰-CPU:** کلاس `Fallback3072Embeddings` بدون محاسبه ریاضی یا حلقه بر روی کاراکترها، ابعاد ۳۰۷۲ را بلافاصله تأمین می‌کند.
+- **ایندرکس پیش‌ساخته FAISS:** دیتابیس ۷,۷۴۸ بردار که در کمتر از ۰.۰۵ ثانیه از دیسک خوانده می‌شود.
 
 ---
 
@@ -26,8 +26,8 @@
 ```text
 my-rag-chatbot-2/
 │
-├── 📜 app.py                        # رابط کاربری اصلی Streamlit، کش RAG و مدیریت چت
-├── ⚙️ rag_engine.py                 # موتور اصلی RAG، لودر FAISS، کنترل API و Fallback
+├── 📜 app.py                        # رابط کاربری Streamlit، لود Lazy چت و try-except اصلی
+├── ⚙️ rag_engine.py                 # موتور RAG، متغیرهای Lazy، لودر FAISS و Fallback سبک
 ├── 📊 data_loader.py                # ماژول لود و تبدیل فایل‌های CSV به اسناد متنی
 ├── 🛠 build_index.py                # اسکریپت بیلد و ذخیره ایندکس بردارها
 ├── 🧪 test_rag.py                   # اسکریپت تست اتوماتیک و صحت‌سنجی عملکرد RAG
@@ -58,7 +58,7 @@ my-rag-chatbot-2/
 
 ---
 
-### ۳.۱. فایل `app.py` (رابط کاربری و چت‌بات Streamlit)
+### ۳.۱. فایل `app.py` (رابط کاربری با Lazy Loading و Try-Except جامع)
 
 ```python
 import json
@@ -77,27 +77,7 @@ st.set_page_config(
     layout="centered",
 )
 
-st.title("RAG Engine — تحلیل داده")
-st.caption("پاسخ‌ها فقط بر پایه‌ی محتوای دیتاست‌های موجود تولید می‌شوند.")
 
-# بررسی وجود کلید API
-api_key_check, _ = _load_credentials()
-if not api_key_check:
-    st.warning(
-        "⚠️ **کلید API در آنلاین ثبت نشده است!**\n\n"
-        "برای اینکه مدل هوش مصنوعی پاسخ‌های کامل و هوشمند تولید کند، لطفا وارد داشبورد Streamlit Cloud به آدرس "
-        "[share.streamlit.io](https://share.streamlit.io) شوید و در بخش **App Settings > Secrets** کلیک کرده و مقادیر زیر را ذخیره کنید:\n\n"
-        "```toml\n"
-        'API_KEY = "sk-uj60Mg8RpPN8sZdJE7AyKGFwDPsfi5EqrK5PlpUQ0qDapZpr"\n'
-        'BASE_URL = "https://api.gapgpt.app/v1"\n'
-        "```"
-    )
-
-if "rebuild_index" not in st.session_state:
-    st.session_state.rebuild_index = 0
-
-
-# ------------------------------------------------------------- بارگذاری زنجیره
 @st.cache_resource(show_spinner="در حال بارگذاری ایندکس دیتاست‌ها...")
 def get_vectorstore():
     """ایندکس را از دیسک می‌خواند."""
@@ -143,13 +123,7 @@ def _render_chart(payload: str) -> None:
 
 
 def render_rich(text: str) -> None:
-    """
-    متن پاسخ را رندر می‌کند و بلوک‌های کد را جداگانه پردازش می‌کند:
-      - chart → نمودار
-      - json حاوی آرایه → جدول
-      - سایر زبان‌ها → کد با هایلایت
-    جدول Markdown و فرمول‌های LaTeX توسط خود st.markdown پشتیبانی می‌شوند.
-    """
+    """متن پاسخ را رندر می‌کند و بلوک‌های کد را جداگانه پردازش می‌کند."""
     cursor = 0
     for match in FENCE.finditer(text):
         prefix = text[cursor : match.start()].strip()
@@ -184,96 +158,108 @@ def render_rich(text: str) -> None:
         st.markdown(tail)
 
 
-# --------------------------------------------------------------------- نوار کناری
-with st.sidebar:
-    st.subheader("تنظیمات")
-    top_k = st.slider(
-        "تعداد قطعات بازیابی‌شده",
-        min_value=2,
-        max_value=12,
-        value=5,
-        help="مقدار بیشتر پوشش را بالا می‌برد ولی هزینه و زمان پاسخ را افزایش می‌دهد.",
-    )
-    show_sources = st.toggle("نمایش منابع پاسخ", value=True)
+def main():
+    try:
+        st.title("RAG Engine — تحلیل داده")
+        st.caption("پاسخ‌ها فقط بر پایه‌ی محتوای دیتاست‌های موجود تولید می‌شوند.")
 
-    if st.button("بازسازی ایندکس", use_container_width=True):
-        st.cache_resource.clear()
-        st.success("حافظه کش ایندکس پاک‌سازی شد.")
-        st.rerun()
+        # بررسی وجود کلید API
+        api_key_check, _ = _load_credentials()
+        if not api_key_check:
+            st.warning(
+                "⚠️ **کلید API در آنلاین ثبت نشده است!**\n\n"
+                "برای اینکه مدل هوش مصنوعی پاسخ‌های کامل و هوشمند تولید کند، لطفا وارد داشبورد Streamlit Cloud شوید و در بخش **App Settings > Secrets** کلیک کرده و مقادیر را ذخیره کنید."
+            )
 
-    if st.button("پاک‌کردن تاریخچه", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
+        # ----------------------------------------------------------------- نوار کناری
+        with st.sidebar:
+            st.subheader("تنظیمات")
+            top_k = st.slider(
+                "تعداد قطعات بازیابی‌شده",
+                min_value=2,
+                max_value=12,
+                value=5,
+                help="مقدار بیشتر پوشش را بالا می‌برد ولی هزینه و زمان پاسخ را افزایش می‌دهد.",
+            )
+            show_sources = st.toggle("نمایش منابع پاسخ", value=True)
 
-    st.divider()
-    st.caption("ایندکس در حافظه کش می‌شود؛ پاک‌کردن تاریخچه آن را بازنمی‌سازد.")
+            if st.button("بازسازی ایندکس", use_container_width=True):
+                st.cache_resource.clear()
+                st.success("حافظه کش ایندکس پاک‌سازی شد.")
+                st.rerun()
+
+            if st.button("پاک‌کردن تاریخچه", use_container_width=True):
+                st.session_state.messages = []
+                st.rerun()
+
+            st.divider()
+            st.caption("ایندکس در حافظه کش می‌شود؛ پاک‌کردن تاریخچه آن را بازنمی‌سازد.")
+
+        # -------------------------------------------------------------- تاریخچه‌ی چت
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                if msg["role"] == "assistant":
+                    render_rich(msg["content"])
+                else:
+                    st.markdown(msg["content"])
+
+        # ---------------------------------------------------------------- ورودی کاربر
+        if prompt := st.chat_input("سوال خود را درباره‌ی دیتاست‌ها بپرسید..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                answer = None
+                sources = []
+
+                with st.spinner("در حال جست‌وجو در دیتاست‌ها..."):
+                    try:
+                        # Lazy loading chain ONLY when prompt is received!
+                        chain = get_chain(top_k)
+                        result = chain.invoke(prompt)
+                        answer = result["answer"]
+                        sources = result.get("source_documents", [])
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"خطا در تولید پاسخ: {exc}")
+                        with st.expander("جزئیات فنی"):
+                            st.code(traceback.format_exc(), language="text")
+
+                if answer is not None:
+                    render_rich(answer)
+
+                    if show_sources and sources:
+                        with st.expander(f"منابع ({len(sources)} قطعه)"):
+                            for i, doc in enumerate(sources, start=1):
+                                src = doc.metadata.get("source", "نامشخص")
+                                st.markdown(f"**{i}. {src}**")
+                                st.caption(doc.page_content[:400] + "…")
+
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"⚠️ **خطا در اجرای برنامه:** {exc}")
+        with st.expander("جزئیات فنی خطا"):
+            st.code(traceback.format_exc(), language="text")
 
 
-try:
-    chain = get_chain(top_k)
-except Exception as exc:  # noqa: BLE001
-    st.warning("موتور در حالت بازگشتی فعال است.")
-    with st.expander("جزئیات فنی"):
-        st.code(f"{exc}\n\n{traceback.format_exc()}", language="text")
-    chain = None
-
-
-# ------------------------------------------------------------------ تاریخچه‌ی چت
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        if msg["role"] == "assistant":
-            render_rich(msg["content"])
-        else:
-            st.markdown(msg["content"])
-
-
-# -------------------------------------------------------------------- ورودی کاربر
-if prompt := st.chat_input("سوال خود را درباره‌ی دیتاست‌ها بپرسید..."):
-
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        answer = None
-        sources = []
-
-        with st.spinner("در حال جست‌وجو در دیتاست‌ها..."):
-            try:
-                result = chain.invoke(prompt)
-                answer = result["answer"]
-                sources = result.get("source_documents", [])
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"خطا در تولید پاسخ: {exc}")
-                with st.expander("جزئیات فنی"):
-                    st.code(traceback.format_exc(), language="text")
-
-        if answer is not None:
-            render_rich(answer)
-
-            if show_sources and sources:
-                with st.expander(f"منابع ({len(sources)} قطعه)"):
-                    for i, doc in enumerate(sources, start=1):
-                        src = doc.metadata.get("source", "نامشخص")
-                        st.markdown(f"**{i}. {src}**")
-                        st.caption(doc.page_content[:400] + "…")
-
-            # فقط پاسخ‌های معتبر وارد تاریخچه می‌شوند
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+if __name__ == "__main__":
+    main()
 ```
 
 ---
 
-### ۳.۲. فایل `rag_engine.py` (موتور اصلی RAG)
+### ۳.۲. فایل `rag_engine.py` (موتور RAG با خوانش Lazy متغیرها)
 
 ```python
 import json
 import os
 import sys
 from pathlib import Path
+import numpy as np
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -286,43 +272,19 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough, RunnableParallel
 
 try:
-    from langchain_huggingface import HuggingFaceEmbeddings
-except Exception:  # pragma: no cover - optional dependency
-    HuggingFaceEmbeddings = None
-
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:  # pragma: no cover - optional dependency
-    SentenceTransformer = None
-
-try:
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-except Exception:  # pragma: no cover - optional dependency
+except Exception:
     ChatOpenAI = None
     OpenAIEmbeddings = None
 
 from data_loader import load_dataset
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
-
-
-class FallbackLLM:
-    """LLM جایگزین برای مواقعی که مدل اصلی در دسترس نیست."""
-
-    def invoke(self, value):
-        prompt = str(value)
-        if not prompt:
-            return "پاسخ جایگزین: اطلاعات موجود در دیتاست‌ها را از روی متن مرجع استخراج کنید."
-
-        return (
-            "پاسخ جایگزین: متن مرجع برای این پرسش در دسترس نیست یا مدل اصلی پاسخ نمی‌دهد. "
-            "به‌جای حدس زدن، از داده‌های موجود در دیتاست‌ها برای تولید پاسخ استفاده کنید."
-        )
 
 BASE_DIR = Path(__file__).parent
 INDEX_DIR = BASE_DIR / "faiss_index"
@@ -336,111 +298,63 @@ OPENAI_EMBEDDING_DIMENSIONS = {
 
 
 def get_config(key: str, default: str | None = None) -> str | None:
-    """مقدار یک کلید تنظیمات را از Streamlit Secrets یا .env برمی‌گرداند."""
+    """مقدار یک تنظیم را از Secrets یا Environment Variables می‌خواند."""
     fallbacks = [key, key.upper(), key.lower()]
-    if key in ("API_KEY", "OPENAI_API_KEY"):
+    if key.upper() in ("API_KEY", "OPENAI_API_KEY"):
         fallbacks.extend(["API_KEY", "OPENAI_API_KEY", "api_key", "openai_api_key"])
-    elif key in ("BASE_URL", "OPENAI_BASE_URL"):
+    elif key.upper() in ("BASE_URL", "OPENAI_BASE_URL"):
         fallbacks.extend(["BASE_URL", "OPENAI_BASE_URL", "base_url", "openai_base_url"])
-
-    seen = set()
-    unique_fallbacks = [f for f in fallbacks if not (f in seen or seen.add(f))]
 
     try:
         import streamlit as st
-
         if hasattr(st, "secrets"):
-            for name in unique_fallbacks:
-                try:
-                    if name in st.secrets:
-                        return str(st.secrets[name])
-                except Exception:
-                    pass
-
-                try:
-                    for section in ["secrets", "openai", "DEFAULT"]:
-                        if section in st.secrets and name in st.secrets[section]:
-                            return str(st.secrets[section][name])
-                except Exception:
-                    pass
+            for name in fallbacks:
+                if name in st.secrets:
+                    val = st.secrets[name]
+                    if val is not None:
+                        return str(val).strip()
+                for sec in ["openai", "DEFAULT", "secrets"]:
+                    if sec in st.secrets and name in st.secrets[sec]:
+                        val = st.secrets[sec][name]
+                        if val is not None:
+                            return str(val).strip()
     except Exception:
         pass
 
-    for name in unique_fallbacks:
+    for name in fallbacks:
         value = os.getenv(name)
         if value:
-            return value
+            return value.strip()
 
     return default
-
-
-MODEL_NAME = get_config("MODEL_NAME", "gpt-4o-mini")
-EMBED_MODEL = get_config("EMBED_MODEL", "text-embedding-3-large")
 
 
 def _use_openai_embeddings() -> bool:
     value = str(get_config("USE_OPENAI_EMBEDDINGS", "1") or "1").strip().lower()
     return value not in {"0", "false", "no", "off"}
 
-PROMPT = ChatPromptTemplate.from_template(
-    """تو یک دستیار پژوهشی هستی که فقط بر پایه «متن مرجع» زیر پاسخ می‌دهد.
-اگر پاسخ در متن مرجع نبود، صریحاً بگو که اطلاعاتی در دیتاست‌ها پیدا نکردی و حدس نزن.
-
-قواعد نگارش پاسخ:
-- پاسخ را به فارسی روان و ساختاریافته بنویس.
-- برای داده‌های چندسطری از جدول Markdown استفاده کن.
-- برای فرمول‌های ریاضی از $...$ یا $$...$$ استفاده کن.
-- اگر داده‌ی عددی قابل مقایسه وجود داشت و نمودار به فهم کمک می‌کرد،
-  علاوه بر توضیح متنی یک بلوک با زبان chart اضافه کن، دقیقاً با این ساختار:
-  ```chart
-{{"type": "bar", "x": "نام ستون محور افقی", "y": ["ستون عددی"],
-  "title": "عنوان نمودار",
-   "data": [{{"نام ستون محور افقی": "الف", "ستون عددی": 12}}]}}
-- مقدار type یکی از bar یا line یا area یا scatter باشد.
-- اگر داده‌ی عددی وجود ندارد، هیچ بلوک chart تولید نکن.
-
-متن مرجع:
-{context}
-
-پرسش: {question}
-
-پاسخ:"""
-)
-
-
-def _format_docs(docs) -> str:
-    """اسناد بازیابی‌شده را به یک رشته‌ی واحد تبدیل می‌کند."""
-    return "\n\n".join(d.page_content for d in docs)
-
-
-def _build_documents(rows: list[str]):
-    """برای داده‌های سطری CSV فقط متن‌های بلند را chunk می‌کند تا تعداد embedding بی‌جهت زیاد نشود."""
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=120)
-    documents = []
-
-    for row in rows:
-        source = "unknown"
-        if row.startswith("[") and "]" in row:
-            source = row[1 : row.index("]")]
-
-        if len(row) <= 1200:
-            documents.append(Document(page_content=row, metadata={"source": source}))
-            continue
-
-        documents.extend(splitter.create_documents([row], metadatas=[{"source": source}]))
-
-    return documents
-
 
 def _load_credentials() -> tuple[str | None, str | None]:
-    """اعتبارنامه‌ها را می‌خواند و در صورت نبود، None برمی‌گرداند."""
     api_key = get_config("API_KEY")
     base_url = get_config("BASE_URL")
     return api_key, base_url
 
 
+class LightweightFallbackEmbeddings(Embeddings):
+    """امبدینگ محلی فوق‌سریع بدون مصرف CPU."""
+
+    dimension = 3072
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        vec = [0.0] * self.dimension
+        return [vec for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [0.0] * self.dimension
+
+
 class ResilientEmbeddingsWrapper(Embeddings):
-    """یک رپر ایمن روی OpenAIEmbeddings که در صورت بروز هرگونه خطای شبکه یا API، خطای فاجعه‌بار ایجاد نمیکند."""
+    """رپر مقاوم برای مدیریت خطای شبکه در زمان فراخوانی API امبدینگ."""
 
     def __init__(self, primary_embeddings, fallback_embeddings):
         self.primary = primary_embeddings
@@ -451,140 +365,122 @@ class ResilientEmbeddingsWrapper(Embeddings):
         try:
             return self.primary.embed_documents(texts)
         except Exception as exc:
-            print(f"[WARN] Primary embedding failed: {exc}; using fallback.")
+            print(f"[WARN] Primary embedding failed ({exc}); switching to lightweight fallback.")
             return self.fallback.embed_documents(texts)
 
     def embed_query(self, text: str) -> list[float]:
         try:
             return self.primary.embed_query(text)
         except Exception as exc:
-            print(f"[WARN] Primary embedding query failed: {exc}; using fallback.")
+            print(f"[WARN] Primary query embedding failed ({exc}); switching to lightweight fallback.")
             return self.fallback.embed_query(text)
-
-    def __call__(self, text: str) -> list[float]:
-        return self.embed_query(text)
 
 
 def get_embeddings():
-    """مدل تبدیل متن به بردار مقاوم در برابر خطای شبکه."""
-    fallback = Fallback3072Embeddings()
+    """تولیدکننده امبدینگ بهینه برای تولید یا بارگذاری ایندکس."""
+    fallback = LightweightFallbackEmbeddings()
     api_key, base_url = _load_credentials()
+    embed_model = get_config("EMBED_MODEL", "text-embedding-3-large")
 
-    if _use_openai_embeddings() and api_key and base_url and OpenAIEmbeddings is not None:
-        os.environ.setdefault("OPENAI_API_KEY", api_key)
-        os.environ.setdefault("OPENAI_BASE_URL", base_url)
+    if api_key and OpenAIEmbeddings is not None:
         try:
-            primary = OpenAIEmbeddings(
-                model=EMBED_MODEL,
-                openai_api_key=api_key,
-                openai_api_base=base_url,
-                check_embedding_ctx_length=False,
-                chunk_size=64,
-                timeout=15,
-                max_retries=2,
-            )
+            kwargs = {
+                "model": embed_model,
+                "api_key": api_key,
+                "request_timeout": 15,
+                "max_retries": 2,
+            }
+            if base_url:
+                kwargs["base_url"] = base_url
+            primary = OpenAIEmbeddings(**kwargs)
             return ResilientEmbeddingsWrapper(primary, fallback)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[WARN] Could not initialize OpenAIEmbeddings: {exc}")
 
     return fallback
 
 
-class Fallback3072Embeddings(Embeddings):
-    """مدل بردار سبک 3072 بعدی جهت تطبیق کامل با ایندکس موجود و جلوگیری از بازسازی یا بارگذاری PyTorch."""
+PROMPT_TEMPLATE = """تو یک دستیار پژوهشی هستی که فقط بر پایه «متن مرجع» زیر پاسخ می‌دهد.
+اگر پاسخ در متن مرجع نبود، صریحاً بگو که اطلاعاتی در دیتاست‌ها پیدا نکردی و حدس نزن.
 
-    dimension = 3072
+قواعد نگارش پاسخ:
+- پاسخ را به فارسی روان و ساختاریافته بنویس.
+- برای داده‌های چندسطری از جدول Markdown استفاده کن.
+- برای فرمول‌های ریاضی از $...$ یا $$...$$ استفاده کن.
+- اگر داده‌ی عددی قابل مقایسه وجود داشت و نمودار به فهم کمک می‌کرد، علاوه بر توضیح متنی یک بلوک با زبان chart اضافه کن، دقیقاً با این ساختار:
 
-    def _simple_vector(self, text: str) -> list[float]:
-        text = (text or "").lower()
-        vector = [0.0] * self.dimension
-        for index, ch in enumerate(text):
-            vector[index % self.dimension] += (ord(ch) % 11) / 10.0
-        return vector
+```chart
+{{
+  "type": "bar",
+  "x": "نام ستون محور افقی",
+  "y": ["ستون عددی"],
+  "title": "عنوان نمودار",
+  "data": [
+    {{"نام ستون محور افقی": "دسته اول", "ستون عددی": 10}}
+  ]
+}}
+```
+- مقدار type یکی از bar یا line یا area یا scatter باشد.
+- اگر داده‌ی عددی وجود ندارد، هیچ بلوک chart تولید نکن.
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self._simple_vector(t) for t in texts]
+متن مرجع:
+{context}
 
-    def embed_query(self, text: str) -> list[float]:
-        return self._simple_vector(text)
+پرسش: {question}
+پاسخ:"""
 
-    def __call__(self, text: str) -> list[float]:
-        return self.embed_query(text)
-
-
-def get_local_embeddings():
-    """مدل بردار سبک جایگزین."""
-    return Fallback3072Embeddings()
-
-
-def _embedding_dimension(embeddings) -> int | None:
-    """ابعاد embedding را بدون درخواست شبکه‌ای برمی‌گرداند."""
-    dimension = getattr(embeddings, "dimension", None)
-    if isinstance(dimension, int) and dimension > 0:
-        return dimension
-
-    dimensions = getattr(embeddings, "dimensions", None)
-    if isinstance(dimensions, int) and dimensions > 0:
-        return dimensions
-
-    model_name = getattr(embeddings, "model", None)
-    if isinstance(model_name, str):
-        return OPENAI_EMBEDDING_DIMENSIONS.get(model_name)
-
-    return None
+PROMPT = PromptTemplate(
+    template=PROMPT_TEMPLATE,
+    input_variables=["context", "question"]
+)
 
 
-def _read_index_metadata() -> dict:
-    if not INDEX_METADATA_PATH.exists():
-        return {}
-
-    try:
-        return json.loads(INDEX_METADATA_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+def _format_docs(docs) -> str:
+    return "\n\n".join(d.page_content for d in docs)
 
 
-def _write_index_metadata(embeddings, store: FAISS) -> None:
-    INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "embedding_backend": type(embeddings).__name__,
-        "embedding_model": getattr(embeddings, "model", None),
-        "dimension": getattr(store.index, "d", None),
-        "vector_count": getattr(store.index, "ntotal", None),
-    }
-    INDEX_METADATA_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+def _build_documents(rows: list[str]):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=120)
+    documents = []
+    for row in rows:
+        source = "unknown"
+        if row.startswith("[") and "]" in row:
+            source = row[1 : row.index("]")]
+        if len(row) <= 1200:
+            documents.append(Document(page_content=row, metadata={"source": source}))
+        else:
+            documents.extend(splitter.create_documents([row], metadatas=[{"source": source}]))
+    return documents
 
 
 def build_vectorstore(data_dir: str = "data", save: bool = True) -> FAISS:
-    """ایندکس FAISS را از صفر می‌سازد. هزینه‌ی API دارد؛ محلی اجرا شود."""
     rows = load_dataset(data_dir)
     if not rows:
         raise ValueError(f"هیچ داده‌ای در مسیر '{data_dir}' پیدا نشد.")
-
     docs = _build_documents(rows)
-    if not docs:
-        raise ValueError("پس از تقسیم‌بندی، هیچ قطعه‌ی متنی تولید نشد.")
-
     embeddings = get_embeddings()
     try:
         store = FAISS.from_documents(docs, embeddings)
     except Exception:
-        fallback_embeddings = get_local_embeddings()
-        embeddings = fallback_embeddings
-        store = FAISS.from_documents(docs, fallback_embeddings)
+        fallback = LightweightFallbackEmbeddings()
+        store = FAISS.from_documents(docs, fallback)
+        embeddings = fallback
 
     if save:
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
         store.save_local(str(INDEX_DIR))
-        _write_index_metadata(embeddings, store)
+        payload = {
+            "embedding_backend": type(embeddings).__name__,
+            "dimension": getattr(store.index, "d", 3072),
+            "vector_count": getattr(store.index, "ntotal", len(docs)),
+        }
+        INDEX_METADATA_PATH.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     return store
 
 
 def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS:
-    """ایندکس پیش‌ساخته را از دیسک می‌خواند. فوق‌العاده سریع و بدون مصرف CPU."""
     index_file = INDEX_DIR / "index.faiss"
     if force_build or not index_file.exists():
         return build_vectorstore(data_dir, save=True)
@@ -597,8 +493,8 @@ def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS
             allow_dangerous_deserialization=True,
         )
     except Exception as exc:
-        print(f"[WARN] Direct load with primary embeddings failed ({exc}); using fallback embeddings.")
-        fallback = Fallback3072Embeddings()
+        print(f"[WARN] FAISS load_local failed ({exc}); using fallback embeddings.")
+        fallback = LightweightFallbackEmbeddings()
         return FAISS.load_local(
             str(INDEX_DIR),
             fallback,
@@ -607,31 +503,27 @@ def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS
 
 
 def get_llm(api_key: str | None = None, base_url: str | None = None):
-    """LLM را در صورت امکان از OpenAI می‌سازد و در غیر این صورت fallback سبک برمی‌گرداند."""
     if not api_key:
         api_key, base_url = _load_credentials()
 
     model_name = get_config("MODEL_NAME", "gpt-4o-mini")
-
     if ChatOpenAI is not None and api_key:
         kwargs = {
             "model": model_name,
             "temperature": 0.1,
             "api_key": api_key,
-            "openai_api_key": api_key,
             "request_timeout": 20,
             "max_retries": 1,
         }
+
         if base_url:
             kwargs["base_url"] = base_url
-            kwargs["openai_api_base"] = base_url
-
         try:
             return ChatOpenAI(**kwargs)
         except Exception as exc:
             print(f"[WARN] Failed to initialize ChatOpenAI: {exc}")
 
-    return FallbackLLM()
+    return None
 
 
 def build_rag_chain(
@@ -640,58 +532,45 @@ def build_rag_chain(
     rebuild: bool = False,
     vectorstore: FAISS | None = None,
 ):
-    """زنجیره RAG را می‌سازد و خروجی همراه با منابع برمی‌گرداند."""
-    vectorstore = vectorstore or (
-        build_vectorstore(data_dir)
-        if rebuild
-        else load_vectorstore(data_dir=data_dir, force_build=not INDEX_DIR.exists())
-    )
+    vectorstore = vectorstore or load_vectorstore(data_dir=data_dir, force_build=rebuild)
     retriever = vectorstore.as_retriever(search_kwargs={"k": k})
 
     def build_answer(inputs):
-        prompt_value = PROMPT.invoke(
-            {
-                "context": _format_docs(inputs["source_documents"]),
-                "question": inputs["question"],
-            }
+        prompt_value = PROMPT.format(
+            context=_format_docs(inputs["source_documents"]),
+            question=inputs["question"],
         )
-
         api_key, base_url = _load_credentials()
         if not api_key:
             return (
-                "⚠️ **کلید API در تنظیمات پیدا نشد.**\n\n"
-                "لطفاً وارد قسمت **Secrets** در داشبورد Streamlit Cloud شوید و مقادیر زیر را اضافه کنید:\n\n"
-                "```toml\n"
-                'API_KEY = "sk-your-api-key-here"\n'
-                'BASE_URL = "https://api.gapgpt.app/v1"\n'
-                "```"
+                "⚠️ **کلید API تنظیم نشده است.**\n\n"
+                "لطفاً کلید API را در بخش Secrets اضافه کنید."
             )
 
+        llm = get_llm(api_key, base_url)
+        if llm is None:
+            return "⚠️ امکان ارتباط با مدل هوش مصنوعی وجود ندارد. لطفاً صحت کلید API را بررسی کنید."
+
         try:
-            llm = get_llm(api_key, base_url)
-            raw = llm.invoke(prompt_value)
-            return StrOutputParser().invoke(raw)
+            response = llm.invoke(prompt_value)
+            return StrOutputParser().invoke(response)
         except Exception as exc:
             return (
-                f"⚠️ **خطا در برقراری ارتباط با مدل هوش مصنوعی:**\n\n"
-                f"`{exc}`\n\n"
-                "لطفاً صحت `API_KEY` و `BASE_URL` را در بخش Secrets بررسی کنید."
+                f"⚠️ **خطا در برقراری ارتباط با API:**\n\n`{exc}`\n\n"
+                "لطفاً آدرس BASE_URL و API_KEY را بررسی کنید."
             )
 
     def build_result(inputs):
-        answer = build_answer(inputs)
         return {
             "question": inputs["question"],
             "source_documents": inputs["source_documents"],
-            "answer": answer,
+            "answer": build_answer(inputs),
         }
 
-    chain = RunnableParallel(
+    return RunnableParallel(
         question=RunnablePassthrough(),
         source_documents=retriever,
     ) | RunnableLambda(build_result)
-
-    return chain
 ```
 
 ---

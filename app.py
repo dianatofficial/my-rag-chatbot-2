@@ -14,28 +14,7 @@ st.set_page_config(
     layout="centered",
 )
 
-st.title("RAG Engine — تحلیل داده")
-st.caption("پاسخ‌ها فقط بر پایه‌ی محتوای دیتاست‌های موجود تولید می‌شوند.")
 
-# بررسی وجود کلید API
-api_key_check, _ = _load_credentials()
-if not api_key_check:
-    st.warning(
-        "⚠️ **کلید API در آنلاین ثبت نشده است!**\n\n"
-        "برای اینکه مدل هوش مصنوعی پاسخ‌های کامل و هوشمند تولید کند، لطفا وارد داشبورد Streamlit Cloud به آدرس "
-        "[share.streamlit.io](https://share.streamlit.io) شوید و در بخش **App Settings > Secrets** کلیک کرده و مقادیر زیر را ذخیره کنید:\n\n"
-        "```toml\n"
-        'API_KEY = "sk-uj60Mg8RpPN8sZdJE7AyKGFwDPsfi5EqrK5PlpUQ0qDapZpr"\n'
-        'BASE_URL = "https://api.gapgpt.app/v1"\n'
-        "```"
-    )
-
-if "rebuild_index" not in st.session_state:
-    st.session_state.rebuild_index = 0
-
-
-
-# ------------------------------------------------------------- بارگذاری زنجیره
 @st.cache_resource(show_spinner="در حال بارگذاری ایندکس دیتاست‌ها...")
 def get_vectorstore():
     """ایندکس را از دیسک می‌خواند."""
@@ -47,8 +26,6 @@ def get_chain(k: int):
     """زنجیره‌ی RAG را روی ایندکس کش‌شده می‌سازد."""
     vectorstore = get_vectorstore()
     return build_rag_chain("data", k=k, rebuild=False, vectorstore=vectorstore)
-
-
 
 
 # ------------------------------------------------------------------- نمایش غنی
@@ -83,13 +60,7 @@ def _render_chart(payload: str) -> None:
 
 
 def render_rich(text: str) -> None:
-    """
-    متن پاسخ را رندر می‌کند و بلوک‌های کد را جداگانه پردازش می‌کند:
-      - chart → نمودار
-      - json حاوی آرایه → جدول
-      - سایر زبان‌ها → کد با هایلایت
-    جدول Markdown و فرمول‌های LaTeX توسط خود st.markdown پشتیبانی می‌شوند.
-    """
+    """متن پاسخ را رندر می‌کند و بلوک‌های کد را جداگانه پردازش می‌کند."""
     cursor = 0
     for match in FENCE.finditer(text):
         prefix = text[cursor : match.start()].strip()
@@ -124,84 +95,93 @@ def render_rich(text: str) -> None:
         st.markdown(tail)
 
 
-# --------------------------------------------------------------------- نوار کناری
-with st.sidebar:
-    st.subheader("تنظیمات")
-    top_k = st.slider(
-        "تعداد قطعات بازیابی‌شده",
-        min_value=2,
-        max_value=12,
-        value=5,
-        help="مقدار بیشتر پوشش را بالا می‌برد ولی هزینه و زمان پاسخ را افزایش می‌دهد.",
-    )
-    show_sources = st.toggle("نمایش منابع پاسخ", value=True)
+def main():
+    try:
+        st.title("RAG Engine — تحلیل داده")
+        st.caption("پاسخ‌ها فقط بر پایه‌ی محتوای دیتاست‌های موجود تولید می‌شوند.")
 
-    if st.button("بازسازی ایندکس", use_container_width=True):
-        st.cache_resource.clear()
-        st.success("حافظه کش ایندکس پاک‌سازی شد.")
-        st.rerun()
+        # بررسی وجود کلید API
+        api_key_check, _ = _load_credentials()
+        if not api_key_check:
+            st.warning(
+                "⚠️ **کلید API در آنلاین ثبت نشده است!**\n\n"
+                "برای اینکه مدل هوش مصنوعی پاسخ‌های کامل و هوشمند تولید کند، لطفا وارد داشبورد Streamlit Cloud شوید و در بخش **App Settings > Secrets** کلیک کرده و مقادیر را ذخیره کنید."
+            )
 
-    if st.button("پاک‌کردن تاریخچه", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
+        # ----------------------------------------------------------------- نوار کناری
+        with st.sidebar:
+            st.subheader("تنظیمات")
+            top_k = st.slider(
+                "تعداد قطعات بازیابی‌شده",
+                min_value=2,
+                max_value=12,
+                value=5,
+                help="مقدار بیشتر پوشش را بالا می‌برد ولی هزینه و زمان پاسخ را افزایش می‌دهد.",
+            )
+            show_sources = st.toggle("نمایش منابع پاسخ", value=True)
 
-    st.divider()
-    st.caption("ایندکس در حافظه کش می‌شود؛ پاک‌کردن تاریخچه آن را بازنمی‌سازد.")
+            if st.button("بازسازی ایندکس", use_container_width=True):
+                st.cache_resource.clear()
+                st.success("حافظه کش ایندکس پاک‌سازی شد.")
+                st.rerun()
+
+            if st.button("پاک‌کردن تاریخچه", use_container_width=True):
+                st.session_state.messages = []
+                st.rerun()
+
+            st.divider()
+            st.caption("ایندکس در حافظه کش می‌شود؛ پاک‌کردن تاریخچه آن را بازنمی‌سازد.")
+
+        # -------------------------------------------------------------- تاریخچه‌ی چت
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                if msg["role"] == "assistant":
+                    render_rich(msg["content"])
+                else:
+                    st.markdown(msg["content"])
+
+        # ---------------------------------------------------------------- ورودی کاربر
+        if prompt := st.chat_input("سوال خود را درباره‌ی دیتاست‌ها بپرسید..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                answer = None
+                sources = []
+
+                with st.spinner("در حال جست‌وجو در دیتاست‌ها..."):
+                    try:
+                        # Lazy loading chain ONLY when prompt is received!
+                        chain = get_chain(top_k)
+                        result = chain.invoke(prompt)
+                        answer = result["answer"]
+                        sources = result.get("source_documents", [])
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"خطا در تولید پاسخ: {exc}")
+                        with st.expander("جزئیات فنی"):
+                            st.code(traceback.format_exc(), language="text")
+
+                if answer is not None:
+                    render_rich(answer)
+
+                    if show_sources and sources:
+                        with st.expander(f"منابع ({len(sources)} قطعه)"):
+                            for i, doc in enumerate(sources, start=1):
+                                src = doc.metadata.get("source", "نامشخص")
+                                st.markdown(f"**{i}. {src}**")
+                                st.caption(doc.page_content[:400] + "…")
+
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"⚠️ **خطا در اجرای برنامه:** {exc}")
+        with st.expander("جزئیات فنی خطا"):
+            st.code(traceback.format_exc(), language="text")
 
 
-try:
-    chain = get_chain(top_k)
-except Exception as exc:  # noqa: BLE001
-    st.warning(
-        "موتور در حالت بازگشتی فعال است."
-    )
-    with st.expander("جزئیات فنی"):
-        st.code(f"{exc}\n\n{traceback.format_exc()}", language="text")
-    chain = None
-
-
-# ------------------------------------------------------------------ تاریخچه‌ی چت
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        if msg["role"] == "assistant":
-            render_rich(msg["content"])
-        else:
-            st.markdown(msg["content"])
-
-
-# -------------------------------------------------------------------- ورودی کاربر
-if prompt := st.chat_input("سوال خود را درباره‌ی دیتاست‌ها بپرسید..."):
-
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        answer = None
-        sources = []
-
-        with st.spinner("در حال جست‌وجو در دیتاست‌ها..."):
-            try:
-                result = chain.invoke(prompt)
-                answer = result["answer"]
-                sources = result.get("source_documents", [])
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"خطا در تولید پاسخ: {exc}")
-                with st.expander("جزئیات فنی"):
-                    st.code(traceback.format_exc(), language="text")
-
-        if answer is not None:
-            render_rich(answer)
-
-            if show_sources and sources:
-                with st.expander(f"منابع ({len(sources)} قطعه)"):
-                    for i, doc in enumerate(sources, start=1):
-                        src = doc.metadata.get("source", "نامشخص")
-                        st.markdown(f"**{i}. {src}**")
-                        st.caption(doc.page_content[:400] + "…")
-
-            # فقط پاسخ‌های معتبر وارد تاریخچه می‌شوند
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+if __name__ == "__main__":
+    main()

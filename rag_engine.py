@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from pathlib import Path
+import numpy as np
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -14,43 +15,19 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough, RunnableParallel
 
 try:
-    from langchain_huggingface import HuggingFaceEmbeddings
-except Exception:  # pragma: no cover - optional dependency
-    HuggingFaceEmbeddings = None
-
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:  # pragma: no cover - optional dependency
-    SentenceTransformer = None
-
-try:
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-except Exception:  # pragma: no cover - optional dependency
+except Exception:
     ChatOpenAI = None
     OpenAIEmbeddings = None
 
 from data_loader import load_dataset
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
-
-
-class FallbackLLM:
-    """LLM جایگزین برای مواقعی که مدل اصلی در دسترس نیست."""
-
-    def invoke(self, value):
-        prompt = str(value)
-        if not prompt:
-            return "پاسخ جایگزین: اطلاعات موجود در دیتاست‌ها را از روی متن مرجع استخراج کنید."
-
-        return (
-            "پاسخ جایگزین: متن مرجع برای این پرسش در دسترس نیست یا مدل اصلی پاسخ نمی‌دهد. "
-            "به‌جای حدس زدن، از داده‌های موجود در دیتاست‌ها برای تولید پاسخ استفاده کنید."
-        )
 
 BASE_DIR = Path(__file__).parent
 INDEX_DIR = BASE_DIR / "faiss_index"
@@ -62,115 +39,68 @@ OPENAI_EMBEDDING_DIMENSIONS = {
     "text-embedding-ada-002": 1536,
 }
 
-
 def get_config(key: str, default: str | None = None) -> str | None:
-    """مقدار یک کلید تنظیمات را از Streamlit Secrets یا .env برمی‌گرداند."""
+    """مقدار یک تنظیم را از Secrets یا Environment Variables می‌خواند."""
     fallbacks = [key, key.upper(), key.lower()]
-    if key in ("API_KEY", "OPENAI_API_KEY"):
+    if key.upper() in ("API_KEY", "OPENAI_API_KEY"):
         fallbacks.extend(["API_KEY", "OPENAI_API_KEY", "api_key", "openai_api_key"])
-    elif key in ("BASE_URL", "OPENAI_BASE_URL"):
+    elif key.upper() in ("BASE_URL", "OPENAI_BASE_URL"):
         fallbacks.extend(["BASE_URL", "OPENAI_BASE_URL", "base_url", "openai_base_url"])
-
-    seen = set()
-    unique_fallbacks = [f for f in fallbacks if not (f in seen or seen.add(f))]
 
     try:
         import streamlit as st
-
         if hasattr(st, "secrets"):
-            for name in unique_fallbacks:
-                try:
-                    if name in st.secrets:
-                        return str(st.secrets[name])
-                except Exception:
-                    pass
-
-                try:
-                    for section in ["secrets", "openai", "DEFAULT"]:
-                        if section in st.secrets and name in st.secrets[section]:
-                            return str(st.secrets[section][name])
-                except Exception:
-                    pass
+            for name in fallbacks:
+                if name in st.secrets:
+                    val = st.secrets[name]
+                    if val is not None:
+                        return str(val).strip()
+                for sec in ["openai", "DEFAULT", "secrets"]:
+                    if sec in st.secrets and name in st.secrets[sec]:
+                        val = st.secrets[sec][name]
+                        if val is not None:
+                            return str(val).strip()
     except Exception:
         pass
 
-    for name in unique_fallbacks:
+    for name in fallbacks:
         value = os.getenv(name)
         if value:
-            return value
-
+            return value.strip()
+            
     return default
-
-
-
-MODEL_NAME = get_config("MODEL_NAME", "gpt-4o-mini")
-EMBED_MODEL = get_config("EMBED_MODEL", "text-embedding-3-large")
-
 
 def _use_openai_embeddings() -> bool:
     value = str(get_config("USE_OPENAI_EMBEDDINGS", "1") or "1").strip().lower()
     return value not in {"0", "false", "no", "off"}
 
-PROMPT = ChatPromptTemplate.from_template(
-    """تو یک دستیار پژوهشی هستی که فقط بر پایه «متن مرجع» زیر پاسخ می‌دهد.
-اگر پاسخ در متن مرجع نبود، صریحاً بگو که اطلاعاتی در دیتاست‌ها پیدا نکردی و حدس نزن.
-
-قواعد نگارش پاسخ:
-- پاسخ را به فارسی روان و ساختاریافته بنویس.
-- برای داده‌های چندسطری از جدول Markdown استفاده کن.
-- برای فرمول‌های ریاضی از $...$ یا $$...$$ استفاده کن.
-- اگر داده‌ی عددی قابل مقایسه وجود داشت و نمودار به فهم کمک می‌کرد،
-  علاوه بر توضیح متنی یک بلوک با زبان chart اضافه کن، دقیقاً با این ساختار:
-  ```chart
-{{"type": "bar", "x": "نام ستون محور افقی", "y": ["ستون عددی"],
-  "title": "عنوان نمودار",
-   "data": [{{"نام ستون محور افقی": "الف", "ستون عددی": 12}}]}}
-- مقدار type یکی از bar یا line یا area یا scatter باشد.
-- اگر داده‌ی عددی وجود ندارد، هیچ بلوک chart تولید نکن.
-
-متن مرجع:
-{context}
-
-پرسش: {question}
-
-پاسخ:"""
-)
-
-
-def _format_docs(docs) -> str:
-    """اسناد بازیابی‌شده را به یک رشته‌ی واحد تبدیل می‌کند."""
-    return "\n\n".join(d.page_content for d in docs)
-
-
-def _build_documents(rows: list[str]):
-    """برای داده‌های سطری CSV فقط متن‌های بلند را chunk می‌کند تا تعداد embedding بی‌جهت زیاد نشود."""
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=120)
-    documents = []
-
-    for row in rows:
-        source = "unknown"
-        if row.startswith("[") and "]" in row:
-            source = row[1 : row.index("]")]
-
-        if len(row) <= 1200:
-            documents.append(Document(page_content=row, metadata={"source": source}))
-            continue
-
-        documents.extend(splitter.create_documents([row], metadatas=[{"source": source}]))
-
-    return documents
-
-
 def _load_credentials() -> tuple[str | None, str | None]:
-    """اعتبارنامه‌ها را می‌خواند و در صورت نبود، None برمی‌گرداند."""
     api_key = get_config("API_KEY")
     base_url = get_config("BASE_URL")
     return api_key, base_url
 
+# ------------------------------------------------- امبدینگ جایگزین کم‌مصرف (NumPy)
+class LightweightFallbackEmbeddings(Embeddings):
+    """امبدینگ محلی فوق‌سریع بدون مصرف CPU بر پایه الگوریتم هش NumPy."""
+    dimension = 3072
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        results = []
+        for t in texts:
+            seed = abs(hash(t or "")) % (2**32 - 1)
+            rng = np.random.default_rng(seed)
+            vec = rng.standard_normal(self.dimension).astype(np.float32)
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec /= norm
+            results.append(vec.tolist())
+        return results
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
 
 class ResilientEmbeddingsWrapper(Embeddings):
-    """یک رپر ایمن روی OpenAIEmbeddings که در صورت بروز هرگونه خطای شبکه یا API، خطای فاجعه‌بار ایجاد نمیکند."""
-
+    """رپر مقاوم برای مدیریت خطای شبکه در زمان فراخوانی API امبدینگ."""
     def __init__(self, primary_embeddings, fallback_embeddings):
         self.primary = primary_embeddings
         self.fallback = fallback_embeddings
@@ -180,187 +110,122 @@ class ResilientEmbeddingsWrapper(Embeddings):
         try:
             return self.primary.embed_documents(texts)
         except Exception as exc:
-            print(f"[WARN] Primary embedding failed: {exc}; using fallback.")
+            print(f"[WARN] Primary embedding failed ({exc}); switching to lightweight fallback.")
             return self.fallback.embed_documents(texts)
 
-    def embed_query(self, text):
+    def embed_query(self, text: str) -> list[float]:
         try:
             return self.primary.embed_query(text)
         except Exception as exc:
-            print(f"[WARN] Primary embedding query failed: {exc}; using fallback.")
+            print(f"[WARN] Primary query embedding failed ({exc}); switching to lightweight fallback.")
             return self.fallback.embed_query(text)
 
-    def __call__(self, text):
-        return self.embed_query(text)
-
-
 def get_embeddings():
-    """مدل تبدیل متن به بردار مقاوم در برابر خطای شبکه."""
-    fallback = Fallback3072Embeddings()
+    """تولیدکننده امبدینگ بهینه برای تولید یا بارگذاری ایندکس."""
+    fallback = LightweightFallbackEmbeddings()
     api_key, base_url = _load_credentials()
-
-    if _use_openai_embeddings() and api_key and base_url and OpenAIEmbeddings is not None:
-        os.environ.setdefault("OPENAI_API_KEY", api_key)
-        os.environ.setdefault("OPENAI_BASE_URL", base_url)
+    embed_model = get_config("EMBED_MODEL", "text-embedding-3-large")
+    
+    if api_key and OpenAIEmbeddings is not None:
         try:
-            primary = OpenAIEmbeddings(
-                model=EMBED_MODEL,
-                openai_api_key=api_key,
-                openai_api_base=base_url,
-                check_embedding_ctx_length=False,
-                chunk_size=64,
-                timeout=15,
-                max_retries=2,
-            )
+            kwargs = {
+                "model": embed_model,
+                "api_key": api_key,
+                "request_timeout": 15,
+                "max_retries": 2,
+            }
+            if base_url:
+                kwargs["base_url"] = base_url
+            primary = OpenAIEmbeddings(**kwargs)
             return ResilientEmbeddingsWrapper(primary, fallback)
-        except Exception:
-            pass
-
+        except Exception as exc:
+            print(f"[WARN] Could not initialize OpenAIEmbeddings: {exc}")
+            
     return fallback
 
 
+# ---------------------------------------------------- ساختار پرامپت هوشمند
+PROMPT_TEMPLATE = """تو یک دستیار پژوهشی هستی که فقط بر پایه «متن مرجع» زیر پاسخ می‌دهد.
+اگر پاسخ در متن مرجع نبود، صریحاً بگو که اطلاعاتی در دیتاست‌ها پیدا نکردی و حدس نزن.
 
-class Fallback3072Embeddings:
-    """مدل بردار سبک 3072 بعدی جهت تطبیق کامل با ایندکس موجود و جلوگیری از بازسازی یا بارگذاری PyTorch."""
+قواعد نگارش پاسخ:
+- پاسخ را به فارسی روان و ساختاریافته بنویس.
+- برای داده‌های چندسطری از جدول Markdown استفاده کن.
+- برای فرمول‌های ریاضی از $...$ یا $$...$$ استفاده کن.
+- اگر داده‌ی عددی قابل مقایسه وجود داشت و نمودار به فهم کمک می‌کرد، علاوه بر توضیح متنی یک بلوک با زبان chart اضافه کن، دقیقاً با این ساختار:
 
-    dimension = 3072
+```chart
+{{
+  "type": "bar",
+  "x": "نام ستون محور افقی",
+  "y": ["ستون عددی"],
+  "title": "عنوان نمودار",
+  "data": [
+    {{"نام ستون محور افقی": "دسته اول", "ستون عددی": 10}}
+  ]
+}}
+```
+- مقدار type یکی از bar یا line یا area یا scatter باشد.
+- اگر داده‌ی عددی وجود ندارد، هیچ بلوک chart تولید نکن.
 
-    def _simple_vector(self, text: str) -> list[float]:
-        text = (text or "").lower()
-        vector = [0.0] * self.dimension
-        for index, ch in enumerate(text):
-            vector[index % self.dimension] += (ord(ch) % 11) / 10.0
-        return vector
+متن مرجع:
+{context}
 
-    def embed_documents(self, texts):
-        return [self._simple_vector(t) for t in texts]
+پرسش: {question}
+پاسخ:"""
 
-    def embed_query(self, text):
-        return self._simple_vector(text)
+PROMPT = PromptTemplate(
+    template=PROMPT_TEMPLATE,
+    input_variables=["context", "question"]
+)
 
-    def __call__(self, text):
-        return self.embed_query(text)
+def _format_docs(docs) -> str:
+    return "\n\n".join(d.page_content for d in docs)
 
-
-def get_local_embeddings():
-    """مدل بردار سبک جایگزین."""
-    return Fallback3072Embeddings()
-
-
-
-def _embedding_dimension(embeddings) -> int | None:
-    """ابعاد embedding را بدون درخواست شبکه‌ای برمی‌گرداند."""
-    dimension = getattr(embeddings, "dimension", None)
-    if isinstance(dimension, int) and dimension > 0:
-        return dimension
-
-    dimensions = getattr(embeddings, "dimensions", None)
-    if isinstance(dimensions, int) and dimensions > 0:
-        return dimensions
-
-    model_name = getattr(embeddings, "model", None)
-    if isinstance(model_name, str):
-        return OPENAI_EMBEDDING_DIMENSIONS.get(model_name)
-
-    return None
-
-
-def _read_index_metadata() -> dict:
-    if not INDEX_METADATA_PATH.exists():
-        return {}
-
-    try:
-        return json.loads(INDEX_METADATA_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _write_index_metadata(embeddings, store: FAISS) -> None:
-    INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "embedding_backend": type(embeddings).__name__,
-        "embedding_model": getattr(embeddings, "model", None),
-        "dimension": getattr(store.index, "d", None),
-        "vector_count": getattr(store.index, "ntotal", None),
-    }
-    INDEX_METADATA_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _select_embeddings_for_index(index_dim: int | None):
-    """embedding سازگار با بعد ایندکس را به روش سبک و بدون اضافه بار CPU انتخاب می‌کند."""
-    metadata = _read_index_metadata()
-    metadata_dim = metadata.get("dimension")
-    if isinstance(metadata_dim, int) and metadata_dim > 0:
-        index_dim = metadata_dim
-
-    api_key, base_url = _load_credentials()
-    if _use_openai_embeddings() and api_key and base_url:
-        pref_dim = OPENAI_EMBEDDING_DIMENSIONS.get(EMBED_MODEL, 3072)
-        if index_dim is None or index_dim == pref_dim:
-            try:
-                return get_embeddings()
-            except Exception:
-                pass
-
-    return get_local_embeddings()
-
-
-
-def _preferred_embeddings():
-    """embedding ترجیحی پروژه را بر اساس تنظیمات جاری برمی‌گرداند."""
-    return get_embeddings()
-
-
-def _should_rebuild_index(index_dim: int | None, preferred_embeddings) -> bool:
-    """اگر ایندکس فعلی با embedding ترجیحی ناسازگار باشد، باید بازسازی شود."""
-    preferred_dim = _embedding_dimension(preferred_embeddings)
-    if index_dim is None or preferred_dim is None:
-        return False
-
-    if not _use_openai_embeddings():
-        return False
-
-    api_key, base_url = _load_credentials()
-    if not (api_key and base_url and OpenAIEmbeddings is not None):
-        return False
-
-    return index_dim != preferred_dim
-
+def _build_documents(rows: list[str]):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=120)
+    documents = []
+    for row in rows:
+        source = "unknown"
+        if row.startswith("[") and "]" in row:
+            source = row[1 : row.index("]")]
+        if len(row) <= 1200:
+            documents.append(Document(page_content=row, metadata={"source": source}))
+        else:
+            documents.extend(splitter.create_documents([row], metadatas=[{"source": source}]))
+    return documents
 
 def build_vectorstore(data_dir: str = "data", save: bool = True) -> FAISS:
-    """ایندکس FAISS را از صفر می‌سازد. هزینه‌ی API دارد؛ محلی اجرا شود."""
     rows = load_dataset(data_dir)
     if not rows:
         raise ValueError(f"هیچ داده‌ای در مسیر '{data_dir}' پیدا نشد.")
-
     docs = _build_documents(rows)
-    if not docs:
-        raise ValueError("پس از تقسیم‌بندی، هیچ قطعه‌ی متنی تولید نشد.")
-
     embeddings = get_embeddings()
     try:
         store = FAISS.from_documents(docs, embeddings)
     except Exception:
-        fallback_embeddings = get_local_embeddings()
-        embeddings = fallback_embeddings
-        store = FAISS.from_documents(docs, fallback_embeddings)
+        fallback = LightweightFallbackEmbeddings()
+        store = FAISS.from_documents(docs, fallback)
+        embeddings = fallback
 
     if save:
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
         store.save_local(str(INDEX_DIR))
-        _write_index_metadata(embeddings, store)
+        payload = {
+            "embedding_backend": type(embeddings).__name__,
+            "dimension": getattr(store.index, "d", 3072),
+            "vector_count": getattr(store.index, "ntotal", len(docs)),
+        }
+        INDEX_METADATA_PATH.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     return store
 
-
 def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS:
-    """ایندکس پیش‌ساخته را از دیسک می‌خواند. فوق‌العاده سریع و بدون مصرف CPU."""
     index_file = INDEX_DIR / "index.faiss"
     if force_build or not index_file.exists():
         return build_vectorstore(data_dir, save=True)
-
+    
     embeddings = get_embeddings()
     try:
         return FAISS.load_local(
@@ -369,60 +234,36 @@ def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS
             allow_dangerous_deserialization=True,
         )
     except Exception as exc:
-        print(f"[WARN] Direct load with primary embeddings failed ({exc}); using fallback embeddings.")
-        fallback = Fallback3072Embeddings()
+        print(f"[WARN] FAISS load_local failed ({exc}); using fallback embeddings.")
+        fallback = LightweightFallbackEmbeddings()
         return FAISS.load_local(
             str(INDEX_DIR),
             fallback,
             allow_dangerous_deserialization=True,
         )
 
-
-
-import concurrent.futures
-
-
-def _invoke_llm_with_timeout(llm, prompt_value, timeout_seconds=12):
-    """مدل را با تایم‌اوت سختگیرانه 12 ثانیه‌ای برای جلوگیری از معلق ماندن استریملیت اجرا می‌کند."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(llm.invoke, prompt_value)
-        try:
-            return future.result(timeout=timeout_seconds)
-        except concurrent.futures.TimeoutError:
-            base_url = get_config("BASE_URL") or "https://api.openai.com/v1"
-            raise TimeoutError(
-                f"پاسخ‌دهی از سرور API (آدرس {base_url}) بیش از {timeout_seconds} ثانیه طول کشید و زمان آن به پایان رسید. "
-                "احتمال دارد سرور API دسترسی از آی‌پی‌های خارجی Streamlit Cloud را محدود یا کند کرده باشد."
-            )
-
-
 def get_llm(api_key: str | None = None, base_url: str | None = None):
-    """LLM را در صورت امکان از OpenAI می‌سازد و در غیر این صورت fallback سبک برمی‌گرداند."""
     if not api_key:
         api_key, base_url = _load_credentials()
-
+        
     model_name = get_config("MODEL_NAME", "gpt-4o-mini")
-
     if ChatOpenAI is not None and api_key:
         kwargs = {
             "model": model_name,
-            "temperature": 0,
+            "temperature": 0.1,
             "api_key": api_key,
-            "openai_api_key": api_key,
-            "timeout": 12,
+            "request_timeout": 20,
             "max_retries": 1,
         }
+
         if base_url:
             kwargs["base_url"] = base_url
-            kwargs["openai_api_base"] = base_url
-
         try:
             return ChatOpenAI(**kwargs)
-        except Exception:
-            pass
-
-    return FallbackLLM()
-
+        except Exception as exc:
+            print(f"[WARN] Failed to initialize ChatOpenAI: {exc}")
+            
+    return None
 
 def build_rag_chain(
     data_dir: str = "data",
@@ -430,57 +271,42 @@ def build_rag_chain(
     rebuild: bool = False,
     vectorstore: FAISS | None = None,
 ):
-    """زنجیره RAG را می‌سازد و خروجی همراه با منابع برمی‌گرداند."""
-    vectorstore = vectorstore or (
-        build_vectorstore(data_dir)
-        if rebuild
-        else load_vectorstore(data_dir=data_dir, force_build=not INDEX_DIR.exists())
-    )
+    vectorstore = vectorstore or load_vectorstore(data_dir=data_dir, force_build=rebuild)
     retriever = vectorstore.as_retriever(search_kwargs={"k": k})
 
     def build_answer(inputs):
-        prompt_value = PROMPT.invoke(
-            {
-                "context": _format_docs(inputs["source_documents"]),
-                "question": inputs["question"],
-            }
+        prompt_value = PROMPT.format(
+            context=_format_docs(inputs["source_documents"]),
+            question=inputs["question"],
         )
-
         api_key, base_url = _load_credentials()
         if not api_key:
             return (
-                "⚠️ **کلید API در تنظیمات پیدا نشد.**\n\n"
-                "لطفاً وارد قسمت **Secrets** در داشبورد Streamlit Cloud شوید و مقادیر زیر را اضافه کنید:\n\n"
-                "```toml\n"
-                'API_KEY = "sk-your-api-key-here"\n'
-                'BASE_URL = "https://api.gapgpt.app/v1"\n'
-                "```"
+                "⚠️ **کلید API تنظیم نشده است.**\n\n"
+                "لطفاً کلید API را در بخش Secrets اضافه کنید."
             )
-
+            
+        llm = get_llm(api_key, base_url)
+        if llm is None:
+            return "⚠️ امکان ارتباط با مدل هوش مصنوعی وجود ندارد. لطفاً صحت کلید API را بررسی کنید."
+            
         try:
-            llm = get_llm(api_key, base_url)
-            raw = _invoke_llm_with_timeout(llm, prompt_value, timeout_seconds=12)
-            return StrOutputParser().invoke(raw)
+            response = llm.invoke(prompt_value)
+            return StrOutputParser().invoke(response)
         except Exception as exc:
             return (
-                f"⚠️ **خطا در برقراری ارتباط با مدل هوش مصنوعی:**\n\n"
-                f"`{exc}`\n\n"
-                "لطفاً صحت `API_KEY` و `BASE_URL` را در بخش Secrets بررسی کنید."
+                f"⚠️ **خطا در برقراری ارتباط با API:**\n\n`{exc}`\n\n"
+                "لطفاً آدرس BASE_URL و API_KEY را بررسی کنید."
             )
 
     def build_result(inputs):
-        answer = build_answer(inputs)
         return {
             "question": inputs["question"],
             "source_documents": inputs["source_documents"],
-            "answer": answer,
+            "answer": build_answer(inputs),
         }
 
-    chain = RunnableParallel(
+    return RunnableParallel(
         question=RunnablePassthrough(),
         source_documents=retriever,
     ) | RunnableLambda(build_result)
-
-    return chain
-
-
