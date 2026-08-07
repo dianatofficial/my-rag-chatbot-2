@@ -42,11 +42,11 @@ def load_dataset(data_dir: str) -> list[str]:
 
         # هر سطر جدول تبدیل می‌شود به متنی مثل:
         # [country_preferences] Country: Iran | Preference: 0.42 | ...
-        texts += df.apply(
-            lambda row: f"[{source_name}] "
-            + " | ".join(f"{col}: {val}" for col, val in row.items() if pd.notna(val)),
-            axis=1,
-        ).tolist()
+        texts += [
+            f"[{source_name}] " + " | ".join(f"{col}: {val}" for col, val in row.items() if pd.notna(val))
+            for row in df.to_dict("records")
+        ]
+
 
         print(f"فایل {filename} خوانده شد: {len(df)} سطر")
 

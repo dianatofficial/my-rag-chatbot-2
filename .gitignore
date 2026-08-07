@@ -32,5 +32,6 @@ __pycache__/
 !faiss_index/
 !faiss_index/*.faiss
 !faiss_index/*.pkl
+!faiss_index/*.json
 data/raw/
 .streamlit/secrets.toml

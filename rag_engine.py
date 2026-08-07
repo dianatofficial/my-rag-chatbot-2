@@ -270,33 +270,23 @@ def _write_index_metadata(embeddings, store: FAISS) -> None:
 
 
 def _select_embeddings_for_index(index_dim: int | None):
-    """embedding سازگار با بعد ایندکس را انتخاب می‌کند."""
+    """embedding سازگار با بعد ایندکس را به روش سبک و بدون اضافه بار CPU انتخاب می‌کند."""
     metadata = _read_index_metadata()
     metadata_dim = metadata.get("dimension")
     if isinstance(metadata_dim, int) and metadata_dim > 0:
         index_dim = metadata_dim
 
-    candidates = []
-
-    try:
-        candidates.append(get_embeddings())
-    except Exception:
-        pass
-
-    try:
-        candidates.append(get_local_embeddings())
-    except Exception:
-        pass
-
-    for embeddings in candidates:
-        dim = _embedding_dimension(embeddings)
-        if index_dim is not None and dim == index_dim:
-            return embeddings
-
-    if candidates:
-        return candidates[0]
+    api_key, base_url = _load_credentials()
+    if _use_openai_embeddings() and api_key and base_url:
+        pref_dim = OPENAI_EMBEDDING_DIMENSIONS.get(EMBED_MODEL, 3072)
+        if index_dim is None or index_dim == pref_dim:
+            try:
+                return get_embeddings()
+            except Exception:
+                pass
 
     return get_local_embeddings()
+
 
 
 def _preferred_embeddings():
