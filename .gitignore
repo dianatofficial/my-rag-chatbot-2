@@ -1,0 +1,36 @@
+# --- محیط و اعتبارنامه‌ها ---
+.env
+.venv/
+venv/
+envs/
+
+# --- کش پایتون ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- داده و سیستم ---
+*.db
+.DS_Store
+
+# --- جاوااسکریپت ---
+node_modules/
+.next/
+dist/
+
+
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+*.faiss
+*.pkl
+!faiss_index/
+!faiss_index/*.faiss
+!faiss_index/*.pkl
+data/raw/
+.streamlit/secrets.toml

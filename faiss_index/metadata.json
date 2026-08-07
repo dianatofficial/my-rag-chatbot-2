@@ -1,0 +1,6 @@
+{
+  "embedding_backend": "_FallbackEmbeddings",
+  "embedding_model": null,
+  "dimension": 8,
+  "vector_count": 7748
+}
