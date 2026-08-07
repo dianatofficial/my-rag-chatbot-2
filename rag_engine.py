@@ -252,9 +252,10 @@ def get_llm(api_key: str | None = None, base_url: str | None = None):
             "model": model_name,
             "temperature": 0.1,
             "api_key": api_key,
-            "request_timeout": 20,
+            "request_timeout": 15,
             "max_retries": 1,
         }
+
 
         if base_url:
             kwargs["base_url"] = base_url

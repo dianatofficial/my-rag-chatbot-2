@@ -1,6 +1,6 @@
 # 🤖 شناسه و مستندات جامع پروژه RAG Chatbot (تحلیل داده‌های اخلاق) — نسخه 2
 
-این سند شامل **کامل‌ترین مستندات فنی، معماری سیستم، چارت درختی پروژه، و سورس‌کد ۱۰۰٪ تمامی فایل‌ها و صفحات** پس از آخرین بهینه‌سازی‌های فوق‌مقاوم (Lazy Loading & Container Anti-Crash) می‌باشد.
+این سند شامل **کامل‌ترین مستندات فنی، معماری سیستم، چارت درختی پروژه، و سورس‌کد ۱۰۰٪ تمامی فایل‌ها و صفحات** پس از آخرین اصلاحات ضد OOM و Thread-Safe می‌باشد.
 
 ---
 
@@ -11,13 +11,23 @@
 2. `demographic_preferences.csv` (ترجیحات دموگرافیک)
 3. `moral_machine_responses.csv` (پاسخ‌های آزمایش ماشینی اخلاق - Moral Machine)
 
-### ✨ ویژگی‌ها و بهینه‌سازی‌های کلیدی:
-- **معماری Lazy Loading برای جلوگیری از کرش کانتینر:** حذف تمامی فراخوانی‌های top-level `get_config()` از سطح ماژول و انتقال آن‌ها به درون توابع مربوطه تا ماژول‌ها بدون مصرف RAM/CPU لود شوند.
-- **بارگذاری زنجیره RAG فقط در زمان ارسال پیام (On-Demand Chain Execution):** ساخت زنجیره RAG در `app.py` فقط زمانی رخ می‌دهد که کاربر سوالی در `st.chat_input` ثبت کند، و در زمان لود اولیه هیچ بار پردازشی ایجاد نمی‌شود.
-- **بلوک مدیریت استثنا (Top-Level Try-Except) در `app.py`:** کلیه منطق اجرایی برنامه داخل تابع `main()` و مدیریت خطا قرار گرفته است تا در صورت بروز هر مشکلی، UI استریملیت به جای کرش کانتینر، پیام شفاف نشان دهد.
-- **حل مشکل WSS و قطعی WebSocket در Streamlit Cloud:** تنظیم `enableCORS = false` و `enableXsrfProtection = false`.
-- **امبدینگ محلی فوق‌سریع ۰-CPU:** کلاس `Fallback3072Embeddings` بدون محاسبه ریاضی یا حلقه بر روی کاراکترها، ابعاد ۳۰۷۲ را بلافاصله تأمین می‌کند.
-- **ایندرکس پیش‌ساخته FAISS:** دیتابیس ۷,۷۴۸ بردار که در کمتر از ۰.۰۵ ثانیه از دیسک خوانده می‌شود.
+### ✨ ویژگی‌ها و اصلاحات فنی اعمال‌شده:
+1. **اصلاح `rag_engine.py`:**
+   - حذف کامل کلاس `ThreadPoolExecutor` و تابع `_invoke_llm_with_timeout` (حذف ریشه‌ای Thread Leak).
+   - تنظیم تایم‌آوت مستقیم در `ChatOpenAI(request_timeout=15, max_retries=1)`.
+   - سبکسازی کامل `Fallback3072Embeddings` بدون محاسبات سنگین ریاضی و حلقه بر روی کاراکترها (مصرف ۰ CPU و RAM).
+   - بارگذاری کاملاً Lazy و کش‌شده در `FAISS.load_local`.
+   - انتقال تمامی فراخوانی‌های `get_config()` به داخل توابع.
+
+2. **اصلاح `app.py`:**
+   - اجرای ساخت زنجیره RAG (`get_chain`) صرفاً در زمان ارسال پرسش توسط کاربر (`st.chat_input`).
+   - قرار گرفتن کل برنامه در یک try-except عمومی جهت جلوگیری از صفحه سفید یا کرش کانتینر.
+
+3. **اصلاح `.streamlit/config.toml`:**
+   - غیرفعال‌سازی CORS و XSRF برای حفظ اتصال دائم پروتکل WebSocket (رفع قطعی WSS).
+
+4. **اصلاح `requirements.txt`:**
+   - حذف تمامی وابستگی‌های سنگین غیرضروری و استفاده از بسته‌های سبک پایتون.
 
 ---
 
@@ -58,7 +68,7 @@ my-rag-chatbot-2/
 
 ---
 
-### ۳.۱. فایل `app.py` (رابط کاربری با Lazy Loading و Try-Except جامع)
+### ۳.۱. فایل `app.py`
 
 ```python
 import json
@@ -252,7 +262,7 @@ if __name__ == "__main__":
 
 ---
 
-### ۳.۲. فایل `rag_engine.py` (موتور RAG با خوانش Lazy متغیرها)
+### ۳.۲. فایل `rag_engine.py`
 
 ```python
 import json
@@ -512,7 +522,7 @@ def get_llm(api_key: str | None = None, base_url: str | None = None):
             "model": model_name,
             "temperature": 0.1,
             "api_key": api_key,
-            "request_timeout": 20,
+            "request_timeout": 15,
             "max_retries": 1,
         }
 
@@ -575,7 +585,7 @@ def build_rag_chain(
 
 ---
 
-### ۳.۳. فایل `.streamlit/config.toml` (تنظیمات سرور و تم Streamlit)
+### ۳.۳. فایل `.streamlit/config.toml`
 
 ```toml
 [theme]
@@ -590,4 +600,18 @@ headless = true
 enableCORS = false
 enableXsrfProtection = false
 maxUploadSize = 200
+```
+
+---
+
+### ۳.۴. فایل `requirements.txt`
+
+```text
+streamlit>=1.30.0
+pandas>=2.0.0
+langchain-core>=0.1.20
+langchain-community>=0.0.20
+langchain-openai>=0.0.5
+faiss-cpu>=1.7.4
+python-dotenv>=1.0.0
 ```
