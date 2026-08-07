@@ -396,17 +396,30 @@ def load_vectorstore(data_dir: str = "data", force_build: bool = False) -> FAISS
         return build_vectorstore(data_dir, save=True)
 
 
-def get_llm(api_key: str | None, base_url: str | None):
+def get_llm(api_key: str | None = None, base_url: str | None = None):
     """LLM را در صورت امکان از OpenAI می‌سازد و در غیر این صورت fallback سبک برمی‌گرداند."""
-    if ChatOpenAI is not None and api_key and base_url:
-        return ChatOpenAI(
-            model=MODEL_NAME,
-            temperature=0,
-            api_key=api_key,
-            base_url=base_url,
-            timeout=60,
-            max_retries=2,
-        )
+    if not api_key:
+        api_key, base_url = _load_credentials()
+
+    model_name = get_config("MODEL_NAME", "gpt-4o-mini")
+
+    if ChatOpenAI is not None and api_key:
+        kwargs = {
+            "model": model_name,
+            "temperature": 0,
+            "api_key": api_key,
+            "openai_api_key": api_key,
+            "timeout": 45,
+            "max_retries": 2,
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+            kwargs["openai_api_base"] = base_url
+
+        try:
+            return ChatOpenAI(**kwargs)
+        except Exception:
+            pass
 
     return FallbackLLM()
 
@@ -418,19 +431,12 @@ def build_rag_chain(
     vectorstore: FAISS | None = None,
 ):
     """زنجیره RAG را می‌سازد و خروجی همراه با منابع برمی‌گرداند."""
-    api_key, base_url = _load_credentials()
-
     vectorstore = vectorstore or (
         build_vectorstore(data_dir)
         if rebuild
         else load_vectorstore(data_dir=data_dir, force_build=not INDEX_DIR.exists())
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": k})
-
-    try:
-        llm = get_llm(api_key, base_url)
-    except Exception:
-        llm = FallbackLLM()
 
     def build_answer(inputs):
         prompt_value = PROMPT.invoke(
@@ -439,13 +445,27 @@ def build_rag_chain(
                 "question": inputs["question"],
             }
         )
+
+        api_key, base_url = _load_credentials()
+        if not api_key:
+            return (
+                "⚠️ **کلید API در تنظیمات پیدا نشد.**\n\n"
+                "لطفاً وارد قسمت **Secrets** در داشبورد Streamlit Cloud شوید و مقادیر زیر را اضافه کنید:\n\n"
+                "```toml\n"
+                'API_KEY = "sk-your-api-key-here"\n'
+                'BASE_URL = "https://api.gapgpt.app/v1"\n'
+                "```"
+            )
+
         try:
+            llm = get_llm(api_key, base_url)
             raw = llm.invoke(prompt_value)
             return StrOutputParser().invoke(raw)
-        except Exception:
+        except Exception as exc:
             return (
-                "پاسخ جایگزین: متن مرجع برای این پرسش در دسترس نیست یا مدل اصلی پاسخ نمی‌دهد. "
-                "برای ادامه، از داده‌های موجود در دیتاست‌ها استفاده کنید."
+                f"⚠️ **خطا در برقراری ارتباط با مدل هوش مصنوعی:**\n\n"
+                f"`{exc}`\n\n"
+                "لطفاً صحت `API_KEY` و `BASE_URL` را در بخش Secrets بررسی کنید."
             )
 
     def build_result(inputs):
@@ -462,3 +482,4 @@ def build_rag_chain(
     ) | RunnableLambda(build_result)
 
     return chain
+
