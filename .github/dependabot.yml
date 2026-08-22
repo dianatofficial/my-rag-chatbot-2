@@ -1,0 +1,8 @@
+
+# Revision 2.27
+version: 2
+updates:
+  - package-ecosystem: 'pip'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
